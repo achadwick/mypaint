@@ -135,6 +135,12 @@ class PreferencesWindow (windowing.Dialog):
         fmt_combo = self._builder.get_object("default_save_format_combobox")
         fmt_combo.set_active_id(fmt_config)
 
+        # Assume sRGB display
+        # Only affects loading and saving PNGs and ORAs
+        assume_srgb = p['display.assume_srgb']
+        assume_srgb_cbutt = self._builder.get_object("assume_srgb_checkbutton")
+        assume_srgb_cbutt.set_active(assume_srgb)
+
         # Button mapping
         bm_ed = self._builder.get_object("button_mapping_editor")
         bm_ed.set_bindings(p.get("input.button_mapping", {}))
@@ -203,6 +209,9 @@ class PreferencesWindow (windowing.Dialog):
     def default_save_format_combobox_changed_cb(self, combobox):
         formatstr = combobox.get_active_id()
         self.app.preferences['saving.default_format'] = formatstr
+
+    def assume_srgb_checkbutton_toggled_cb(self, checkbutton):
+        self.app.preferences['display.assume_srgb'] = bool(checkbutton.get_active())
 
     def color_wheel_rgb_radiobutton_toggled_cb(self, radiobtn):
         if self.in_update_ui or not radiobtn.get_active():

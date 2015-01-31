@@ -463,6 +463,7 @@ class Application (object):
             'brushmanager.selected_groups': [],
             'frame.color_rgba': (0.12, 0.12, 0.12, 0.92),
             'misc.context_restores_color': True,
+            'display.assume_srgb': True,
 
             "scratchpad.last_opened_scratchpad": "",
 
