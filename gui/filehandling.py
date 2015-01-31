@@ -365,6 +365,8 @@ class FileHandler(object):
         See also: `lib.document.Document.save()`.
         """
         thumbnail_pixbuf = None
+        prefs = self.app.preferences
+        options['save_srgb_chunks'] = prefs.get('display.assume_srgb')
         try:
             x, y, w, h = doc.model.get_bbox()
             if w == 0 and h == 0:
