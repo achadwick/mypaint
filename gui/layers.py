@@ -21,6 +21,8 @@ from gi.repository import Pango
 from gettext import gettext as _
 
 import sys
+import logging
+logger = logging.getLogger(__name__)
 
 
 ## Module vars
@@ -294,22 +296,27 @@ class RootStackTreeModelWrapper (GObject.GObject, Gtk.TreeDragSource,
     def do_row_draggable(self, path):
         """Checks whether a row can be dragged"""
         path = tuple(path)
-        return self._root.deepget(path) is not None
+        draggable = (self._root.deepget(path) is not None)
+        logger.debug("do_row_draggable(%r) -> %r", path, draggable)
+        return draggable
 
     def do_drag_data_get(self, path, selection_data):
         """Extracts source row data for a view's active drag"""
         # HACK: fill in the GtkSelectionData so that the drag protocol
         # can proceed.  Need atomicity/undoability though, so fill in
         # details during the protocol exchange.
-        Gtk.tree_set_row_drag_data(selection_data, self, path)
+        if not Gtk.tree_set_row_drag_data(selection_data, self, path):
+            return False
         self._drag = {
             "src": tuple(path),
             "targ": None,
         }
+        logger.debug("do_drag_data_get rdd=%r _drag=%r", path, self._drag)
         return True
 
     def do_drag_data_delete(self, path):
         """Final deletion stage in the high-level DnD protocol"""
+        logger.debug("do_drag_data_delete %r", path)
         del_path = tuple(path)
         if self._drag is None:
             return False
@@ -323,8 +330,12 @@ class RootStackTreeModelWrapper (GObject.GObject, Gtk.TreeDragSource,
     ## GtkTreeDragDestIface vfunc implementation
 
     def do_row_drop_possible(self, path, selection_data):
-        """Checks whether a row can be dragged"""
+        """Checks whether a row can be dropped"""
         if self._drag is None:
+            logger.debug(
+                "do_row_drop_possible(%r): False (no current drag)",
+                path,
+            )
             return False
         src_path = self._drag.get("src")
         path = tuple(path)
@@ -335,9 +346,19 @@ class RootStackTreeModelWrapper (GObject.GObject, Gtk.TreeDragSource,
             if target_layer is None:
                 target_parent = self._root.deepget(path[:-1])
                 if not isinstance(target_parent, lib.layer.LayerStack):
+                    logger.debug(
+                        "do_row_drop_possible(%r): False (drag-into refused)",
+                         path,
+                    )
                     return False
         # Can't move a path under itself
-        return not lib.layer.path_startswith(path, src_path)
+        path_inside_src = lib.layer.path_startswith(path, src_path)
+        logger.debug(
+            "do_row_drop_possible(%r): %r (not-inside-self test)",
+            path,
+            not path_inside_src,
+        )
+        return not path_inside_src
 
     def do_drag_data_received(self, path, selection_data):
         """Receives data at the drop phase of the DnD proto"""
@@ -345,8 +366,17 @@ class RootStackTreeModelWrapper (GObject.GObject, Gtk.TreeDragSource,
         # 3.12, often screwing up the view's idea of tree even when it's
         # not changed. Another reason to build up details as we go.
         if self._drag is None:
+            logger.debug(
+                "do_drag_data_received(%r): False (no current drag)",
+                tuple(path),
+            )
             return False
         self._drag["targ"] = tuple(path)
+        logger.debug(
+            "do_drag_data_received(%r): True; _drag now %r",
+            tuple(path),
+            self._drag,
+        )
         return True
 
 
@@ -541,4 +571,5 @@ def _test():
 
 
 if __name__ == '__main__':
+    logging.basicConfig(level=logging.DEBUG)
     _test()
