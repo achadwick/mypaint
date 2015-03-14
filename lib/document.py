@@ -20,6 +20,7 @@ import xml.etree.ElementTree as ET
 from warnings import warn
 from copy import deepcopy
 import shutil
+import threading
 import logging
 logger = logging.getLogger(__name__)
 
@@ -111,6 +112,7 @@ class Document (object):
         self._painting_only = painting_only
         self._cache_dir = None
         self._autosave_countdown_timer_id = None
+        self._autosave_write_thread = None
         self.sync_pending_changes += self._sync_pending_changes_cb
 
         # Optional page area and resolution information
@@ -181,6 +183,7 @@ class Document (object):
         """Internal: recursively delete the working-document cache_dir"""
         if self._painting_only:
             return
+        self._finish_autosave_write()
         assert self._cache_dir is not None
         shutil.rmtree(self._cache_dir, ignore_errors=True)
         if os.path.exists(self._cache_dir):
@@ -221,6 +224,9 @@ class Document (object):
         self._autosave_countdown_timer_id = None
 
     def _autosave_countdown_timer_cb(self):
+        if self._autosave_write_thread:
+            if self._autosave_write_thread.is_alive():
+                return True
         if self.unsaved_painting_time > 0:
             self._start_autosave_write()
         self._autosave_countdown_timer_id = None
@@ -233,6 +239,56 @@ class Document (object):
         if self.frame_enabled:
             frame_bbox = tuple(self.get_frame())
         logger.info("Starting autosave of %r", rootclone)
+        thread = threading.Thread(
+            target = self._autosave_write_thread_cb,
+            args = [],
+            kwargs = dict(
+                cachedir = self._cache_dir,
+                rootstack = rootclone,
+                xres = self._xres,
+                yres = self._yres,
+                bbox = frame_bbox,
+            ),
+        )
+        thread.daemon = True
+        thread.start()
+        self._autosave_write_thread = thread
+
+    @staticmethod
+    def _autosave_write_thread_cb(cachedir, rootstack, xres, yres, bbox):
+        oraoldfile = os.path.join(cachedir, "autosave.ora~")
+        oratmpfile = os.path.join(cachedir, ".autosave.ora.NEW")
+        orafile = os.path.join(cachedir, "autosave.ora")
+        logger.info("autosave thread: saving to %r...", oratmpfile)
+        if os.path.isfile(oratmpfile):
+            logger.error("autosave thread: tmpfile exists: stopping")
+            return
+        _save_layers_to_new_orazip(
+            rootstack,
+            oratmpfile,
+            bbox = bbox,
+            xres = xres,
+            yres = yres,
+        )
+        if not os.path.exists(oratmpfile):
+            logger.error(
+                "autosave thread: failed to create %r: stopping",
+                oratmpfile,
+            )
+            return
+        if os.path.exists(oraoldfile):
+            os.unlink(oraoldfile)
+        if os.path.exists(orafile):
+            os.rename(orafile, oraoldfile)
+        os.rename(oratmpfile, orafile)
+        logger.info("autosave thread: done creating %r", orafile)
+
+    def _finish_autosave_write(self):
+        logger.info("Stopping any ongoing autosave thread...")
+        if self._autosave_write_thread is None:
+            return
+        self._autosave_write_thread.join()
+        self._autosave_write_thread = None
 
     def _sync_pending_changes_cb(self, doc, flush=True, **kwds):
         if not flush:
