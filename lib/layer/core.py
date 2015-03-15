@@ -703,6 +703,10 @@ class LayerBase (object):
         """
         raise NotImplementedError
 
+    def save_to_openraster_dir(self, oradir, tempdir, root_stack_path,
+                               canvas_bbox, frame_bbox, **kwargs):
+        raise NotImplementedError
+
     def _get_stackxml_element(self, tag, x=None, y=None):
         """Internal: get a basic etree Element for .ora saving"""
 

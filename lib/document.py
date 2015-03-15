@@ -233,6 +233,56 @@ class Document (object):
         if self.frame_enabled:
             frame_bbox = tuple(self.get_frame())
         logger.info("Starting autosave of %r", rootclone)
+        thread = threading.Thread(
+            target = self._autosave_write_thread_cb,
+            args = [],
+            kwargs = dict(
+                cachedir = self._cache_dir,
+                rootstack = rootclone,
+                xres = self._xres,
+                yres = self._yres,
+                bbox = frame_bbox,
+            ),
+        )
+        thread.daemon = True
+        thread.start()
+        self._autosave_write_thread = thread
+
+    @staticmethod
+    def _autosave_write_thread_cb(cachedir, rootstack, xres, yres, bbox):
+        oradir_old = os.path.join(cachedir, "autosave~")
+        oradir_tmp = os.path.join(cachedir, ".autosave.NEW")
+        oradir_final = os.path.join(cachedir, "autosave")
+        logger.info("autosave thread: saving to %r...", oradir_tmp)
+        if os.path.isdir(oradir_tmp):
+            logger.error("autosave thread: tmpdir exists: stopping")
+            return
+        _save_layers_to_new_oradir(
+            rootstack,
+            oradir_tmp,
+            bbox = bbox,
+            xres = xres,
+            yres = yres,
+        )
+        if not os.path.exists(oradir_tmp):
+            logger.error(
+                "autosave thread: failed to create %r: stopping",
+                oradir_tmp,
+            )
+            return
+        if os.path.exists(oradir_old):
+            shutil.rmtree(oradir_old, ignore_errors=True)
+        if os.path.exists(oradir_final):
+            os.rename(oradir_final, oradir_old)
+        os.rename(oradir_tmp, oradir_final)
+        logger.info("autosave thread: done creating %r", oradir_final)
+
+    def _finish_autosave_write(self):
+        logger.info("Stopping any ongoing autosave thread...")
+        if self._autosave_write_thread is None:
+            return
+        self._autosave_write_thread.join()
+        self._autosave_write_thread = None
 
     def _sync_pending_changes_cb(self, doc, flush=True, **kwds):
         if not flush:
@@ -988,6 +1038,101 @@ class Document (object):
         orazip.close()
 
         logger.info('%.3fs load_ora total', time.time() - t0)
+
+
+def _save_layers_to_new_oradir(root_stack, oradir, bbox=None,
+                               xres=None, yres=None, **kwargs):
+    """Save a root layer stack to a new OpenRaster directory
+
+    :param lib.layer.RootLayerStack root_stack: what to save
+    :param unicode dirname: where to save
+    :param tuple bbox: area to save, None to use the inherent data bbox
+    :param int xres: nominal X resolution for the doc
+    :param int yres: nominal Y resolution for the doc
+    :param \*\*kwargs: Passed through to root_stack.save_to_openraster()
+    :rtype: GdkPixbuf
+    :returns: Thumbnail preview image (256x256 max) of what was saved
+
+    >>> from lib.layer.test import make_test_stack
+    >>> root, leaves = make_test_stack()
+    >>> import tempfile
+    >>> tmpdir = tempfile.mkdtemp()
+    >>> oradir = os.path.join(tmpdir, "test")
+    >>> _save_layers_to_new_oradir(root, oradir)  # doctest: +ELLIPSIS
+    <Pixbuf...>
+    >>> assert os.path.isdir(oradir)
+    >>> shutil.rmtree(tmpdir)
+    >>> assert not os.path.exists(tmpdir)
+
+    """
+    if not isinstance(oradir, unicode):
+        oradir = oradir.decode(sys.getfilesystemencoding())
+    tempdir = os.path.join(oradir, "tmp")
+    os.makedirs(tempdir)
+
+    # The mimetype entry must be first
+    fp = open(os.path.join(oradir, 'mimetype'), 'w')
+    fp.write(OPENRASTER_MEDIA_TYPE)
+    fp.close()
+
+    # Update the initially-selected flag on all layers
+    # Also get the data bounding box as we go
+    data_bbox = helpers.Rect()
+    for s_path, s_layer in root_stack.walk():
+        selected = (s_path == root_stack.current_path)
+        s_layer.initially_selected = selected
+        data_bbox.expandToIncludeRect(s_layer.get_bbox())
+    data_bbox = tuple(data_bbox)
+
+    # Save the layer stack
+    image = ET.Element('image')
+    if bbox is None:
+        bbox = data_bbox
+    x0, y0, w0, h0 = bbox
+    image.attrib['w'] = str(w0)
+    image.attrib['h'] = str(h0)
+    root_stack_path = ()
+    datadir = os.path.join(oradir, "data")
+    os.makedirs(datadir)
+    root_stack_elem = root_stack.save_to_openraster_dir(
+        oradir, tempdir, root_stack_path,
+        data_bbox, bbox, **kwargs
+    )
+    image.append(root_stack_elem)
+
+    # Resolution info
+    if xres and yres:
+        image.attrib["xres"] = str(xres)
+        image.attrib["yres"] = str(yres)
+
+    # OpenRaster version declaration
+    image.attrib["version"] = OPENRASTER_VERSION
+
+    # Thumbnail preview (256x256)
+    thumbnail = root_stack.render_thumbnail(bbox)
+    thumbdir = os.path.join(oradir, "Thumbnails")
+    thumbfile = os.path.join(thumbdir, "thumbnail.png")
+    os.makedirs(thumbdir)
+    lib.pixbuf.save(thumbnail, thumbfile)
+
+    # Save fully rendered image too
+    mergedfile = os.path.join(oradir, "mergedimage.png")
+    root_stack.save_as_png(
+        mergedfile, *bbox,
+        alpha=False, background=True,
+        **kwargs
+    )
+
+    # Prettification
+    helpers.indent_etree(image)
+
+    # Finalize
+    xml = ET.tostring(image, encoding='UTF-8')
+    xml_fp = open(os.path.join(oradir, "stack.xml"), 'wb')
+    xml_fp.write(xml)
+    xml_fp.close()
+    os.rmdir(tempdir)
+    return thumbnail
 
 
 def _save_layers_to_new_orazip(root_stack, filename, bbox=None, xres=None, yres=None, **kwargs):

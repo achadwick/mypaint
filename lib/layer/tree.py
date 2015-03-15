@@ -1845,6 +1845,26 @@ class RootLayerStack (group.LayerStack):
 
         return stack_elem
 
+    def save_to_openraster_dir(self, oradir, tmpdir, path, canvas_bbox,
+                               frame_bbox, **kwargs):
+        """Saves the stack's data into an open OpenRaster dir"""
+        stack_elem = super(RootLayerStack, self).save_to_openraster_dir(
+            oradir, tmpdir, path, canvas_bbox,
+            frame_bbox, **kwargs
+        )
+        # Save background
+        bg_layer = self.background_layer
+        bg_layer.initially_selected = False
+        bg_path = (len(self),)
+        bg_elem = bg_layer.save_to_openraster_dir(
+            oradir, tmpdir, bg_path,
+            canvas_bbox, frame_bbox,
+            **kwargs
+        )
+        stack_elem.append(bg_elem)
+
+        return stack_elem
+
     ## Notification mechanisms
 
     @event

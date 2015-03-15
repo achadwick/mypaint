@@ -330,6 +330,12 @@ class SurfaceBackedLayer (core.LayerBase):
         return self._save_rect_to_ora(orazip, tmpdir, "layer", path,
                                       frame_bbox, rect, **kwargs)
 
+    def save_to_openraster_dir(self, oradir, tmpdir, path,
+                               canvas_bbox, frame_bbox, **kwargs):
+        rect = self.get_bbox()
+        return self._save_rect_to_oradir(oradir, tmpdir, "layer", path,
+                                         frame_bbox, rect, **kwargs)
+
     @staticmethod
     def _make_refname(prefix, path, suffix, sep='-'):
         """Internal: standardized filename for something wiith a path"""
@@ -363,6 +369,28 @@ class SurfaceBackedLayer (core.LayerBase):
             y=(data_y - frame_y),
         )
         elem.attrib["src"] = storepath
+        return elem
+
+    def _save_rect_to_oradir(self, oradir, tmpdir, prefix, path,
+                             frame_bbox, rect, **kwargs):
+        """Internal: saves a rectangle of the surface to an ORA dir"""
+        # Write PNG data
+        pngname = self._make_refname(prefix, path, ".png")
+        pngpath = os.path.join(oradir, "data", pngname)
+        t0 = time.time()
+        self._surface.save_as_png(pngpath, *rect, **kwargs)
+        t1 = time.time()
+        logger.debug('%.3fs surface saving %r', t1-t0, pngname)
+        # Return details
+        data_bbox = tuple(rect)
+        data_x, data_y = data_bbox[0:2]
+        frame_x, frame_y = frame_bbox[0:2]
+        elem = self._get_stackxml_element(
+            "layer",
+            x=(data_x - frame_x),
+            y=(data_y - frame_y),
+        )
+        elem.attrib["src"] = u"data/%s" % (pngname,)
         return elem
 
     ## Painting symmetry axis
@@ -527,6 +555,31 @@ class FileBackedLayer (SurfaceBackedLayer, core.ExternallyEditable):
         pass
 
     ## Saving
+
+    def save_to_openraster_dir(self, oradir, tmpdir, path,
+                               canvas_bbox, frame_bbox, **kwargs):
+        """Saves the working file to an OpenRaster dir"""
+        # No supercall in this override, but the base implementation's
+        # attributes method is useful.
+        data_x, data_y = (self._x, self._y)
+        frame_x, frame_y = frame_bbox[0:2]
+        elem = self._get_stackxml_element(
+            "layer",
+            x=(data_x - frame_x),
+            y=(data_y - frame_y),
+        )
+        # Pick a suitable name to store under.
+        self._ensure_valid_working_file()
+        src_path = unicode(self._workfile)
+        src_rootname, src_ext = os.path.splitext(src_path)
+        src_ext = src_ext.lower()
+        storename = self._make_refname("layer", path, src_ext)
+        targ_path = os.path.join(oradir, "data", storename)
+        # Copy the source file
+        shutil.copy2(src_path, targ_path)
+        # Return details of what was written.
+        elem.attrib["src"] = u"data/%s" % (storename,)
+        return elem
 
     def save_to_openraster(self, orazip, tmpdir, path,
                            canvas_bbox, frame_bbox, **kwargs):
@@ -800,6 +853,29 @@ class BackgroundLayer (SurfaceBackedLayer):
         elem.attrib['background_tile'] = storename
         return elem
 
+    def save_to_openraster_dir(self, oradir, tmpdir, path,
+                               canvas_bbox, frame_bbox, **kwargs):
+        # Save as a regular layer for other apps.
+        # Background surfaces repeat, so just the bit filling the frame.
+        elem = self._save_rect_to_oradir(
+            oradir, tmpdir, "background", path,
+            frame_bbox, frame_bbox, **kwargs
+        )
+
+        # Also save as single pattern (with corrected origin)
+        x0, y0 = frame_bbox[0:2]
+        x, y, w, h = self.get_bbox()
+        rect = (x+x0, y+y0, w, h)
+
+        pngname = self._make_refname("background", path, "tile.png")
+        targpath = os.path.join(oradir, "data", pngname)
+        t0 = time.time()
+        self._surface.save_as_png(targpath, *rect, **kwargs)
+        t1 = time.time()
+        storename = 'data/%s' % (pngname,)
+        logger.debug('%.3fs surface saving %s', t1 - t0, storename)
+        elem.attrib['background_tile'] = storename
+        return elem
 
 class VectorLayer (FileBackedLayer):
     """SVG-based vector layer
@@ -1178,6 +1254,28 @@ class PaintingLayer (SurfaceBackedLayer, core.ExternallyEditable):
         helpers.zipfile_writestr(orazip, storepath, data)
         # Return details
         elem.attrib['mypaint_strokemap_v2'] = storepath
+        return elem
+
+    def save_to_openraster_dir(self, oradir, tmpdir, path,
+                               canvas_bbox, frame_bbox, **kwargs):
+        """Save the strokemap too, in addition to the base implementation"""
+        # Save the layer normally
+        elem = super(PaintingLayer, self).save_to_openraster_dir(
+            oradir, tmpdir, path,
+            canvas_bbox, frame_bbox, **kwargs
+        )
+        # Store stroke shape data too
+        x, y, w, h = self.get_bbox()
+        t0 = time.time()
+        datname = self._make_refname("layer", path, "strokemap.dat")
+        datpath = os.path.join(oradir, "data", datname)
+        datfp = open(datpath, "wb")
+        self._save_strokemap_to_file(datfp, -x, -y)
+        datfp.close()
+        t1 = time.time()
+        logger.debug("%.3fs strokemap saving %r", t1-t0, datname)
+        # Return details
+        elem.attrib['mypaint_strokemap_v2'] = u"data/%s" % (datname,)
         return elem
 
     ## Type-specific stuff
