@@ -207,7 +207,6 @@ env.Append(SWIGFLAGS="-Wall -noproxydel -python -c++")
 module_src = [
         'mypaintlib.i',
         'fill.cpp',
-        'eventhack.cpp',
         'gdkpixbuf2numpy.cpp',
         'pixops.cpp',
         'fastpng.cpp',

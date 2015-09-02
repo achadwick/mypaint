@@ -30,18 +30,6 @@ from drawutils import spline_4p
 from lib import mypaintlib
 
 
-## Module settings
-
-# Which workarounds to allow for motion event compression
-EVCOMPRESSION_WORKAROUND_ALLOW_DISABLE_VIA_API = True
-EVCOMPRESSION_WORKAROUND_ALLOW_EVHACK_FILTER = True
-
-# Consts for the style of workaround in use
-EVCOMPRESSION_WORKAROUND_DISABLE_VIA_API = 1
-EVCOMPRESSION_WORKAROUND_EVHACK_FILTER = 2
-EVCOMPRESSION_WORKAROUND_NONE = 999
-
-
 ## Class defs
 
 class FreehandMode (gui.mode.BrushworkModeMixin,
@@ -134,12 +122,6 @@ class FreehandMode (gui.mode.BrushworkModeMixin,
         def __init__(self):
             object.__init__(self)
 
-            # Ugly workarounds
-            self.event_compression_workaround = None
-            self.event_compression_was_enabled = None
-            self.evhack_data = None   # or (tdw, mode), identity matters!
-            self.evhack_positions = []
-
             self.last_event_had_pressure = False
 
             # Raw data which was delivered with an identical timestamp
@@ -158,10 +140,6 @@ class FreehandMode (gui.mode.BrushworkModeMixin,
             self._last_queued_event_time = 0
 
             # Queued Event Handling
-
-            # Pressure and tilt interpolation for evhack events, which
-            # don't have pressure or tilt date.
-            self.interp = PressureAndTiltInterpolator()
 
             # Time of the last-processed event
             self.last_handled_event_time = 0
@@ -235,12 +213,10 @@ class FreehandMode (gui.mode.BrushworkModeMixin,
             """Fetches zero or more events to process from the queue"""
             if len(self.motion_queue) > 0:
                 event = self.motion_queue.popleft()
-                for ievent in self.interp.feed(*event):
-                    yield ievent
+                yield event
 
     def _reset_drawing_state(self):
         """Resets all per-TDW drawing state"""
-        self._remove_event_compression_workarounds()
         self._drawing_state = {}
 
     def _get_drawing_state(self, tdw):
@@ -255,8 +231,6 @@ class FreehandMode (gui.mode.BrushworkModeMixin,
     def enter(self, doc, **kwds):
         """Enter freehand mode"""
         super(FreehandMode, self).enter(doc, **kwds)
-        self._event_compression_supported = None
-        self._drawing_state = {}
         self._reset_drawing_state()
         self._debug = (logger.getEffectiveLevel() == logging.DEBUG)
 
@@ -302,69 +276,6 @@ class FreehandMode (gui.mode.BrushworkModeMixin,
         elif tdw in self._cursor_hidden_tdws:
             tdw.set_override_cursor(None)
             self._cursor_hidden_tdws.remove(tdw)
-
-    ## Work around motion compression in recent GDKs
-
-    def _add_event_compression_workaround(self, tdw):
-        """Adds a workaround for the motion event compression bug"""
-        drawstate = self._get_drawing_state(tdw)
-        win = tdw.get_window()
-        msg_prefix = "Add motion event compression workaround: "
-        if (EVCOMPRESSION_WORKAROUND_ALLOW_DISABLE_VIA_API
-                and self._event_compression_supported):
-            workaround_used = EVCOMPRESSION_WORKAROUND_DISABLE_VIA_API
-            was_enabled = win.get_event_compression()
-            logger.debug(
-                msg_prefix
-                + "using set_event_compression(False) (%r) (was %r)",
-                tdw, was_enabled,
-            )
-            drawstate.event_compression_was_enabled = was_enabled
-            win.set_event_compression(False)
-        elif EVCOMPRESSION_WORKAROUND_ALLOW_EVHACK_FILTER:
-            workaround_used = EVCOMPRESSION_WORKAROUND_EVHACK_FILTER
-            assert drawstate.evhack_data is None
-            data = (tdw, self)
-            logger.warning(msg_prefix + "using evhack filter %r", data)
-            mypaintlib.evhack_gdk_window_add_filter(win, data)
-            drawstate.evhack_data = data
-            drawstate.evhack_positions = []
-        else:
-            workaround_used = EVCOMPRESSION_WORKAROUND_NONE
-            logger.warning(msg_prefix + "not using any workaround")
-        drawstate.event_compression_workaround = workaround_used
-
-    def _remove_event_compression_workarounds(self):
-        """Removes all workarounds for the motion event compression bug"""
-        msg_prefix = "Remove motion event compression workaround: "
-        for tdw, drawstate in self._drawing_state.iteritems():
-            win = tdw.get_window()
-            workaround_used = drawstate.event_compression_workaround
-            if workaround_used == EVCOMPRESSION_WORKAROUND_DISABLE_VIA_API:
-                mcomp = drawstate.event_compression_was_enabled
-                assert mcomp is not None
-                logger.debug(
-                    msg_prefix + "restoring event_compression to %r (%r)",
-                    mcomp, tdw,
-                )
-                win.set_event_compression(mcomp)
-            elif workaround_used == EVCOMPRESSION_WORKAROUND_EVHACK_FILTER:
-                drawstate = self._get_drawing_state(tdw)
-                data = drawstate.evhack_data
-                assert data is not None
-                logger.warning(msg_prefix + "removing evhack filter %r", data)
-                mypaintlib.evhack_gdk_window_remove_filter(win, data)
-                drawstate.evhack_data = None
-                drawstate.evhack_positions = []
-            else:
-                logger.warning(msg_prefix + "no workaround to disable")
-            drawstate.event_compression_workaround = None
-
-    def queue_evhack_position(self, tdw, x, y, t):
-        """Queues noncompressed motion data (called by eventhack.hpp)"""
-        if tdw.is_sensitive:
-            drawstate = self._get_drawing_state(tdw)
-            drawstate.evhack_positions.append((x, y, t))
 
     ## Input handlers
 
@@ -444,14 +355,7 @@ class FreehandMode (gui.mode.BrushworkModeMixin,
         if not (tdw.is_sensitive and current_layer.get_paintable()):
             return False
 
-        # Disable or work around GDK's motion event compression
-        if self._event_compression_supported is None:
-            win = tdw.get_window()
-            mc_supported = hasattr(win, "set_event_compression")
-            self._event_compression_supported = mc_supported
         drawstate = self._get_drawing_state(tdw)
-        if drawstate.event_compression_workaround is None:
-            self._add_event_compression_workaround(tdw)
 
         # If the device has changed and the last pressure value from the
         # previous device is not equal to 0.0, this can leave a visible
@@ -488,7 +392,7 @@ class FreehandMode (gui.mode.BrushworkModeMixin,
             elif pressure is not None and isfinite(pressure):
                 drawstate.last_good_raw_pressure = pressure
 
-        # Ensure each non-evhack event has a defined pressure
+        # Ensure each event has a defined pressure
         if pressure is not None:
             # Using the reported pressure. Apply some sanity checks
             if not isfinite(pressure):
@@ -560,29 +464,6 @@ class FreehandMode (gui.mode.BrushworkModeMixin,
         # TEST: Does this ever happen?
         if state & gdk.SHIFT_MASK:
             pressure = 0.0
-
-        # If the eventhack filter caught more than one event, push them
-        # onto the motion event queue. Pressures and tilts will be
-        # interpolated from surrounding motion-notify events.
-        if len(drawstate.evhack_positions) > 1:
-            # Remove the last item: it should be the one corresponding
-            # to the current motion-notify-event.
-            hx0, hy0, ht0 = drawstate.evhack_positions.pop(-1)
-            # Check that we can use the eventhack data uncorrected
-            if (hx0, hy0, ht0) == (x, y, time):
-                for hx, hy, ht in drawstate.evhack_positions:
-                    hx, hy = tdw.display_to_model(hx, hy)
-                    event_data = (ht, hx, hy, None, None, None)
-                    drawstate.queue_motion(event_data)
-            else:
-                logger.warning(
-                    "Final evhack event (%0.2f, %0.2f, %d) doesn't match its "
-                    "corresponding motion-notify-event (%0.2f, %0.2f, %d). "
-                    "This can be ignored if it's just a one-off occurrence.",
-                    hx0, hy0, ht0, x, y, time)
-        # Reset the eventhack queue
-        if len(drawstate.evhack_positions) > 0:
-            drawstate.evhack_positions = []
 
         # Queue this event
         x, y = tdw.display_to_model(x, y)
@@ -694,169 +575,3 @@ class FreehandOptionsWidget (gui.mode.PaintingModeOptionsWidgetBase):
         self.attach(scale, 1, row, 1, 1)
         row += 1
         return row
-
-
-class PressureAndTiltInterpolator (object):
-    """Interpolates event sequences, filling in null pressure/tilt data
-
-    The interpolator operates almost as a filter. Feed the interpolator
-    an extra zero-pressure event at button-release time to generate a
-    nice tailoff for mouse users. The interpolator is sensitive to
-    transitions between nonzero and zero effective pressure in both
-    directions. These transitions clear out just enough history to avoid
-    hook-off and lead-in artefacts.
-    """
-
-    def __init__(self):
-        """Instantiate with a clear internal state"""
-        object.__init__(self)
-        # Events with all axis data present, forming control points
-        self._pt0_prev = None
-        self._pt0 = None
-        self._pt1 = None
-        self._pt1_next = None
-        # Null-axis event sequences
-        self._np = []
-        self._np_next = []
-
-    def _clear(self):
-        """Reset to the initial clean state"""
-        self._pt0_prev = None
-        self._pt0 = None
-        self._pt1 = None
-        self._pt1_next = None
-        self._np = []
-        self._np_next = []
-
-    def _step(self):
-        """Step the interpolation parameters forward"""
-        self._pt0_prev = self._pt0
-        self._pt0 = self._pt1
-        self._pt1 = self._pt1_next
-        self._pt1_next = None
-        self._np = self._np_next
-        self._np_next = []
-
-    def _interpolate_p0_p1(self):
-        """Interpolate between p0 and p1, but do not step or clear"""
-        pt0p, pt0 = self._pt0_prev, self._pt0
-        pt1, pt1n = self._pt1, self._pt1_next
-        can_interp = (pt0 is not None and pt1 is not None and
-                      len(self._np) > 0)
-        if can_interp:
-            if pt0p is None:
-                pt0p = pt0
-            if pt1n is None:
-                pt1n = pt1
-            t0 = pt0[0]
-            t1 = pt1[0]
-            dt = t1 - t0
-            can_interp = dt > 0
-        if can_interp:
-            for np in self._np:
-                t, x, y = np[0:3]
-                p, xt, yt = spline_4p(
-                    float(t - t0) / dt,
-                    array(pt0p[3:]), array(pt0[3:]),
-                    array(pt1[3:]), array(pt1n[3:])
-                )
-                yield (t, x, y, p, xt, yt)
-        if pt1 is not None:
-            yield pt1
-
-    def _interpolate_and_step(self):
-        """Internal: interpolate & step forward or clear"""
-        for ievent in self._interpolate_p0_p1():
-            yield ievent
-        if ((self._pt1_next[3] > 0.0) and
-                (self._pt1 is not None) and
-                (self._pt1[3] <= 0.0)):
-            # Transitions from zero to nonzero pressure
-            # Clear history to avoid artefacts
-            self._pt0_prev = None   # ignore the current pt0
-            self._pt0 = self._pt1
-            self._pt1 = self._pt1_next
-            self._pt1_next = None
-            self._np = []           # drop the buffer we've built up too
-            self._np_next = []
-        elif ((self._pt1_next[3] <= 0.0) and
-              (self._pt1 is not None) and (self._pt1[3] > 0.0)):
-            # Transitions from nonzero to zero pressure
-            # Tail off neatly by doubling the zero-pressure event
-            self._step()
-            self._pt1_next = self._pt1
-            for ievent in self._interpolate_p0_p1():
-                yield ievent
-            # Then clear history
-            self._clear()
-        else:
-            # Normal forward of control points and event buffers
-            self._step()
-
-    def feed(self, time, x, y, pressure, xtilt, ytilt):
-        """Feed in an event, yielding zero or more interpolated events
-
-        :param time: event timestamp, integer number of milliseconds
-        :param x: Horizontal coordinate of the event, in model space
-        :type x: float
-        :param y: Vertical coordinate of the event, in model space
-        :type y: float
-        :param pressure: Effective pen pressure, [0.0, 1.0]
-        :param xtilt: Pen tilt in the model X direction, [-1.0, 1.0]
-        :param ytilt: Pen tilt in the model's Y direction, [-1.0, 1.0]
-        :returns: Iterator of event tuples
-
-        Event tuples have the form (TIME, X, Y, PRESSURE, XTILT, YTILT).
-        """
-        if None in (pressure, xtilt, ytilt):
-            self._np_next.append((time, x, y, pressure, xtilt, ytilt))
-        else:
-            self._pt1_next = (time, x, y, pressure, xtilt, ytilt)
-            for t, x, y, p, xt, yt in self._interpolate_and_step():
-                yield (t, x, y, p, xt, yt)
-
-
-## Module tests
-
-if __name__ == '__main__':
-    interp = PressureAndTiltInterpolator()
-    events = [
-        (3, 0.3, 0.3, None, None, None),
-        (7, 0.7, 0.7, None, None, None),
-        (10, 1.0, 1.0, 0.33, 0.0, 0.5),
-        (13, 1.3, 1.3, None, None, None),
-        (15, 1.5, 1.5, None, None, None),
-        (17, 1.7, 1.7, None, None, None),
-        (20, 2.0, 2.0, 0.45, 0.1, 0.4),
-        (23, 2.3, 2.3, None, None, None),
-        (27, 2.7, 2.7, None, None, None),
-        (30, 3.0, 3.0, 0.50, 0.2, 0.3),
-        (33, 3.3, 3.3, None, None, None),
-        (37, 3.7, 3.7, None, None, None),
-        (40, 4.0, 4.0, 0.40, 0.3, 0.2),
-        (44, 4.4, 4.4, None, None, None),
-        (47, 4.7, 4.7, None, None, None),
-        (50, 5.0, 5.0, 0.30, 0.5, 0.1),
-        (53, 5.3, 5.3, None, None, None),
-        (57, 5.7, 5.7, None, None, None),
-        (60, 6.0, 6.0, 0.11, 0.4, 0.0),
-        (63, 6.3, 6.3, None, None, None),
-        (67, 6.7, 6.7, None, None, None),
-        (70, 7.0, 7.0, 0.00, 0.2, 0.0),
-        (73, 7.0, 7.0, None, None, None),
-        (78, 50.0, 50.0, None, None, None),
-        (83, 110.0, 110.0, None, None, None),
-        (88, 120.0, 120.0, None, None, None),
-        (93, 130.0, 130.0, None, None, None),
-        (98, 140.0, 140.0, None, None, None),
-        (103, 150.0, 150.0, None, None, None),
-        (108, 160.0, 160.0, None, None, None),
-        (110, 170.0, 170.0, 0.11, 0.1, 0.0),
-        (120, 171.0, 171.0, 0.33, 0.0, 0.0),
-        (130, 172.0, 172.0, 0.00, 0.0, 0.0)
-    ]
-    # Emit CSV for ad-hoc plotting
-    print "time,x,y,pressure,xtilt,ytilt"
-    for event in events:
-        for data in interp.feed(*event):
-            print ",".join([str(c) for c in data])

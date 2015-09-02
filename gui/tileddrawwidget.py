@@ -173,9 +173,19 @@ class TiledDrawWidget (gtk.EventBox):
         forwarder = lambda *a: self.transformation_updated()
         self.renderer.transformation_updated += forwarder
 
+        # Turn off GDK's motion event compression
+        self.connect("map", self._fix_event_compression)
+        self.connect("realize", self._fix_event_compression)
+
     @event
     def transformation_updated(self):
         """Forwarded event: transformation was updated"""
+
+    def _fix_event_compression(self, widget):
+        win = widget.get_window()
+        win.set_event_compression(False)
+        assert not win.get_event_compression(), \
+            "Failed to turn off motion event compression"
 
     def _size_allocate_cb(self, widget, alloc):
         """Allow for allocation changes under certain circumstances
