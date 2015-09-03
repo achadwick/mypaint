@@ -112,109 +112,6 @@ class FreehandMode (gui.mode.BrushworkModeMixin,
 
     ## Per-TDW drawing state
 
-    class _DrawingState (object):
-        """Per-canvas drawing state
-
-        Various kinds of queue for raw data capture or interpolation of
-        pressure and tilt.
-        """
-
-        def __init__(self):
-            object.__init__(self)
-
-            self.last_event_had_pressure = False
-
-            # Raw data which was delivered with an identical timestamp
-            # to the previous one.  Happens on Windows due to differing
-            # clock granularities (at least, under GTK2).
-            self._zero_dtime_motions = []
-
-            # Motion Queue
-
-            # Combined, cleaned-up motion data queued ready for
-            # interpolation of missing pressures and tilts, then
-            # subsequent rendering. Using a queue makes rendering
-            # independent of data gathering.
-            self.motion_queue = deque()
-            self.motion_processing_cbid = None
-            self._last_queued_event_time = 0
-
-            # Queued Event Handling
-
-            # Time of the last-processed event
-            self.last_handled_event_time = 0
-
-            # Debugging: number of events procesed each second,
-            # average times.
-            self.avgtime = None
-
-            # Button pressed while drawing
-            # Not every device sends button presses, but evdev ones
-            # do, and this is used as a workaround for an evdev bug:
-            # https://github.com/mypaint/mypaint/issues/29
-            self.button_down = None
-            self.last_good_raw_pressure = 0.0
-            self.last_good_raw_xtilt = 0.0
-            self.last_good_raw_ytilt = 0.0
-
-        def queue_motion(self, event_data):
-            """Append one raw motion event to the motion queue
-
-            :param event_data: Extracted data from an event.
-            :type event_data: tuple
-
-            Events are tuples of the form ``(time, x, y, pressure,
-            xtilt, ytilt)``. Times are in milliseconds, and are
-            expressed as ints. ``x`` and ``y`` are ordinary Python
-            floats, and refer to model coordinates. The pressure and
-            tilt values have the meaning assigned to them by GDK; if
-            ```pressure`` is None, pressure and tilt values will be
-            interpolated from surrounding defined values.
-
-            Zero-dtime events are detected and cleaned up here.
-            """
-            time, x, y, pressure, xtilt, ytilt = event_data
-            if time < self._last_queued_event_time:
-                logger.warning('Time is running backwards! Corrected.')
-                time = self._last_queued_event_time
-
-            if time == self._last_queued_event_time:
-                # On Windows, GTK timestamps have a resolution around
-                # 15ms, but tablet events arrive every 8ms.
-                # https://gna.org/bugs/index.php?16569
-                zdata = (x, y, pressure, xtilt, ytilt)
-                self._zero_dtime_motions.append(zdata)
-            else:
-                # Queue any previous events that had identical
-                # timestamps, linearly interpolating their times.
-                if self._zero_dtime_motions:
-                    dtime = time - self._last_queued_event_time
-                    if dtime > 100:
-                        # Really old events; don't associate them with
-                        # the new one.
-                        zt = time - 100.0
-                        interval = 100.0
-                    else:
-                        zt = self._last_queued_event_time
-                        interval = float(dtime)
-                    step = interval / (len(self._zero_dtime_motions) + 1)
-                    for zx, zy, zp, zxt, zyt in self._zero_dtime_motions:
-                        zt += step
-                        zevent_data = (zt, zx, zy, zp, zxt, zyt)
-                        self.motion_queue.append(zevent_data)
-                    # Reset the backlog buffer
-                    self._zero_dtime_motions = []
-                # Queue this event too
-                self.motion_queue.append(event_data)
-                # Update the timestamp used above
-                self._last_queued_event_time = time
-
-        def next_processing_events(self):
-            """Fetches zero or more events to process from the queue"""
-            if len(self.motion_queue) > 0:
-                event = self.motion_queue.popleft()
-                yield event
-
     def _reset_drawing_state(self):
         """Resets all per-TDW drawing state"""
         self._drawing_state = {}
@@ -222,7 +119,7 @@ class FreehandMode (gui.mode.BrushworkModeMixin,
     def _get_drawing_state(self, tdw):
         drawstate = self._drawing_state.get(tdw, None)
         if drawstate is None:
-            drawstate = self._DrawingState()
+            drawstate = _DrawingState()
             self._drawing_state[tdw] = drawstate
         return drawstate
 
@@ -553,6 +450,110 @@ class FreehandMode (gui.mode.BrushworkModeMixin,
             widget = FreehandOptionsWidget()
             cls._OPTIONS_WIDGET = widget
         return cls._OPTIONS_WIDGET
+
+
+class _DrawingState (object):
+    """Per-canvas drawing state.
+
+    Various kinds of queue for data fixup, before it's passed to the
+    libmypaint brush engine.
+
+    """
+
+    def __init__(self):
+        object.__init__(self)
+
+        self.last_event_had_pressure = False
+
+        # Raw data which was delivered with an identical timestamp
+        # to the previous one.  Happens on Windows due to differing
+        # clock granularities (at least, under GTK2).
+        self._zero_dtime_motions = []
+
+        # Motion Queue
+
+        # Combined, cleaned-up motion data queued ready for rendering
+        # Using a queue makes rendering independent of data gathering.
+        self.motion_queue = deque()
+        self.motion_processing_cbid = None
+        self._last_queued_event_time = 0
+
+        # Queued Event Handling
+
+        # Time of the last-processed event
+        self.last_handled_event_time = 0
+
+        # Debugging: number of events procesed each second,
+        # average times.
+        self.avgtime = None
+
+        # Button pressed while drawing
+        # Not every device sends button presses, but evdev ones
+        # do, and this is used as a workaround for an evdev bug:
+        # https://github.com/mypaint/mypaint/issues/29
+        self.button_down = None
+
+        self.last_good_raw_pressure = 0.0
+        self.last_good_raw_xtilt = 0.0
+        self.last_good_raw_ytilt = 0.0
+
+    def queue_motion(self, event_data):
+        """Append one raw motion event to the motion queue
+
+        :param event_data: Extracted data from an event.
+        :type event_data: tuple
+
+        Events are tuples of the form ``(time, x, y, pressure,
+        xtilt, ytilt)``. Times are in milliseconds, and are
+        expressed as ints. ``x`` and ``y`` are ordinary Python
+        floats, and refer to model coordinates. The pressure and
+        tilt values have the meaning assigned to them by GDK; if
+        ```pressure`` is None, pressure and tilt values will be
+        interpolated from surrounding defined values.
+
+        Zero-dtime events are detected and cleaned up here.
+        """
+        time, x, y, pressure, xtilt, ytilt = event_data
+        if time < self._last_queued_event_time:
+            logger.warning('Time is running backwards! Corrected.')
+            time = self._last_queued_event_time
+
+        if time == self._last_queued_event_time:
+            # On Windows, GTK timestamps have a resolution around
+            # 15ms, but tablet events arrive every 8ms.
+            # https://gna.org/bugs/index.php?16569
+            zdata = (x, y, pressure, xtilt, ytilt)
+            self._zero_dtime_motions.append(zdata)
+        else:
+            # Queue any previous events that had identical
+            # timestamps, linearly interpolating their times.
+            if self._zero_dtime_motions:
+                dtime = time - self._last_queued_event_time
+                if dtime > 100:
+                    # Really old events; don't associate them with
+                    # the new one.
+                    zt = time - 100.0
+                    interval = 100.0
+                else:
+                    zt = self._last_queued_event_time
+                    interval = float(dtime)
+                step = interval / (len(self._zero_dtime_motions) + 1)
+                for zx, zy, zp, zxt, zyt in self._zero_dtime_motions:
+                    zt += step
+                    zevent_data = (zt, zx, zy, zp, zxt, zyt)
+                    self.motion_queue.append(zevent_data)
+                # Reset the backlog buffer
+                self._zero_dtime_motions = []
+            # Queue this event too
+            self.motion_queue.append(event_data)
+            # Update the timestamp used above
+            self._last_queued_event_time = time
+
+    def next_processing_events(self):
+        """Fetches zero or more events to process from the queue"""
+        if len(self.motion_queue) > 0:
+            event = self.motion_queue.popleft()
+            yield event
 
 
 class FreehandOptionsWidget (gui.mode.PaintingModeOptionsWidgetBase):
