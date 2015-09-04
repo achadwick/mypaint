@@ -259,7 +259,6 @@ class Brushwork (Command):
         # State vars
         self._recording_started = False
         self._recording_finished = False
-        self.split_due = False
         self._sshot_after_applied = False
 
     @property
@@ -360,10 +359,14 @@ class Brushwork (Command):
 
         Stroke data is recorded at this level, but strokes are not
         autosplit here because that would involve the creation of a new
-        Brushwork command on the CommandStack. Instead, callers should
-        check `split_due` and split appropriately.
+        Brushwork command on the CommandStack. Instead, the creator of
+        this command should also observe the model, stop this command
+        from recording when a split is due, then begin a new active
+        Brushwork command.
 
         An example of a mode which does just this can be found in gui/.
+
+        See lib.document.Document.stroke_split_needed().
 
         """
         self._check_recording_started()
@@ -383,7 +386,7 @@ class Brushwork (Command):
             x, y, pressure,
             xtilt, ytilt,
         )
-        self.split_due = layer.stroke_to(
+        layer.stroke_to(
             brush,
             x, y, pressure,
             xtilt, ytilt, dtime,

@@ -1359,18 +1359,21 @@ class PaintingLayer (SurfaceBackedLayer, core.ExternallyEditable):
         :param x: Input event's X coord, translated to document coords
         :param y: Input event's Y coord, translated to document coords
         :param pressure: Input event's pressure
-        :param xtilt: Input event's tilt component in the document X direction
-        :param ytilt: Input event's tilt component in the document Y direction
+        :param xtilt: Input event's tilt component in doc's X direction
+        :param ytilt: Input event's tilt component in doc's Y direction
         :param dtime: Time delta, in seconds
-        :returns: whether the stroke should now be split
-        :rtype: bool
 
-        This method renders zero or more dabs to the surface of this layer,
-        but does not affect the strokemap. Use this for the incremental
-        painting of segments of a stroke sorresponding to single input events.
-        The return value decides whether to finalize the lib.stroke.Stroke
-        which is currently recording the user's input, and begin recording a
-        new one.
+        This method renders zero or more dabs to the surface of this
+        layer, but does not affect the strokemap. Use this for the
+        incremental painting of segments of a stroke corresponding to
+        single input events.
+
+        Painting using this method for any length of time makes a split
+        due, for the sake of the undo stack.  When a split is due,
+        observers are notified via the owning document.
+
+        See lib.document.Document.stroke_split_needed()
+
         """
         self._surface.begin_atomic()
         split = brush.stroke_to(
@@ -1379,7 +1382,13 @@ class PaintingLayer (SurfaceBackedLayer, core.ExternallyEditable):
         )
         self._surface.end_atomic()
         self.autosave_dirty = True
-        return split
+        if split:
+            try:
+                doc = self.root.doc
+            except AttributeError:
+                pass
+            else:
+                doc.stroke_split_needed(self)
 
     def render_stroke(self, stroke):
         """Render a whole captured stroke to the canvas

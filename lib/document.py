@@ -1570,6 +1570,21 @@ class Document (object):
         )
         self.set_frame_enabled(frame_enab, user_initiated=False)
 
+    @event
+    def stroke_split_needed(self, layer):
+        """Event: invoked when a stroke split is needed during drawing.
+
+        :param lib.layer.data.PaintingLayer layer: originating layer.
+
+        This is invoked by the layer receiving stroke input in response
+        to the C brush engine code telling it a split is due.
+
+        Observers should finalize the lib.stroke.Stroke which is
+        currently recording the user's input, add it to the layer, and
+        begin recording a new one.
+
+        """
+
 
 def _save_layers_to_new_orazip(root_stack, filename, bbox=None, xres=None, yres=None, frame_active=False, **kwargs):
     """Save a root layer stack to a new OpenRaster zipfile

@@ -655,6 +655,11 @@ class BrushworkModeMixin (InteractionMode):
         super(BrushworkModeMixin, self).__init__(**kwds)
         self.__abrupt_start = abrupt_start
         self.__active_brushwork = {}  # {model: Brushwork}
+        self.__split_due = {}  # {model: bool}
+
+    def __record_split_due(self, model, layer):
+        """Records a stroke split as being needed."""
+        self.__split_due[model] = True
 
     def brushwork_begin(self, model, description=None, abrupt=False):
         """Begins a new segment of active brushwork for a model
@@ -682,6 +687,7 @@ class BrushworkModeMixin (InteractionMode):
         self.__abrupt_start = False
         cmd.__last_pos = None
         self.__active_brushwork[model] = cmd
+        model.stroke_split_needed += self.__record_split_due
 
     def brushwork_commit(self, model, abrupt=False):
         """Commits any active brushwork for a model to the command stack
@@ -695,6 +701,10 @@ class BrushworkModeMixin (InteractionMode):
 
         See also `brushwork_rollback()`.
         """
+        try:
+            model.stroke_split_needed -= self.__record_split_due
+        except ValueError:
+            pass
         cmd = self.__active_brushwork.pop(model, None)
         if cmd is None:
             return
@@ -719,6 +729,10 @@ class BrushworkModeMixin (InteractionMode):
 
         See also `brushwork_commit()`.
         """
+        try:
+            model.stroke_split_needed -= self.__record_split_due
+        except ValueError:
+            pass
         cmd = self.__active_brushwork.pop(model, None)
         if cmd is None:
             return
@@ -754,11 +768,12 @@ class BrushworkModeMixin (InteractionMode):
         """
         cmd = self.__active_brushwork.get(model, None)
         desc0 = None
-        if auto_split and cmd and cmd.split_due:
+        if auto_split and self.__split_due.get(model) and cmd:
             desc0 = cmd.description  # retain for the next cmd
             self.brushwork_commit(model, abrupt=False)
             assert model not in self.__active_brushwork
             cmd = None
+            self.__split_due[model] = False
         if not cmd:
             self.brushwork_begin(model, description=desc0, abrupt=False)
             cmd = self.__active_brushwork[model]
