@@ -21,6 +21,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 from gettext import gettext as _
+from gi.repository import GLib
 
 import mypaintlib
 import helpers
@@ -158,7 +159,9 @@ class MyPaintSurface (TileAccessible, TileBlittable, TileCompositable):
     def end_atomic(self):
         bbox = self._backend.end_atomic()
         if (bbox[2] > 0 and bbox[3] > 0):
-            self.notify_observers(*bbox)
+            GLib.idle_add(lambda:
+                self.notify_observers(*bbox) and False
+            )
         return bbox
 
     @property

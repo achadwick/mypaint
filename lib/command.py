@@ -15,6 +15,8 @@ from observable import event
 import tiledsurface
 import lib.stroke
 from warnings import warn
+import threading
+import Queue
 
 from copy import deepcopy
 import weakref
@@ -260,6 +262,9 @@ class Brushwork (Command):
         self._recording_started = False
         self._recording_finished = False
         self._sshot_after_applied = False
+        # Painting thread
+        self._paint_thread = None
+        self._paint_queue = Queue.Queue()
 
     @property
     def display_name(self):
@@ -386,11 +391,43 @@ class Brushwork (Command):
             x, y, pressure,
             xtilt, ytilt,
         )
-        layer.stroke_to(
-            brush,
-            x, y, pressure,
-            xtilt, ytilt, dtime,
+        data = (brush, layer, x, y, pressure, xtilt, ytilt, dtime)
+        self._check_paint_thread_running()
+        self._paint_queue.put(data)
+
+    def _check_paint_thread_running(self):
+        assert self._recording_started
+        if self._paint_thread:
+            return
+        logger.debug("main: starting paint thread")
+        self._paint_thread = threading.Thread(
+            target = self._paint_stroke_data,
+            name = "lib.command.Brushwork.<paint-thread>",
         )
+        self._paint_thread.daemon = True
+        self._paint_thread.start()
+
+    def _paint_stroke_data(self):
+        assert self._recording_started
+        logger.debug("paint thread: starting")
+        while True:
+            data = self._paint_queue.get(block=True)
+            if data is None:
+                break
+            brush, layer, x, y, pressure, xtilt, ytilt, dtime = data
+            layer.stroke_to(brush, x, y, pressure, xtilt, ytilt, dtime)
+        logger.debug("paint thread: stopping")
+        assert self._recording_finished
+
+    def _stop_paint_thread(self):
+        assert self._recording_finished
+        if not self._paint_thread:
+            return
+        logger.debug("main: asking paint thread to complete its work & stop")
+        self._paint_queue.put(None)
+        self._paint_thread.join()
+        self._paint_thread = None
+        logger.debug("main: paint thread joined and stopped")
 
     def stop_recording(self, revert=False):
         """Ends the recording phase
@@ -416,9 +453,11 @@ class Brushwork (Command):
 
         """
         self._check_recording_started()
+
         layer = self._stroke_target_layer
         self._stroke_target_layer = None  # prevent potential leak
         self._recording_finished = True
+        self._stop_paint_thread()
         if self._stroke_seq is None:
             # Unclear circumstances, but I've seen it happen
             # (unpaintable layers and visibility state toggling).

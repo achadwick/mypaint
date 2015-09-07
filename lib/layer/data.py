@@ -38,6 +38,8 @@ import lib.layer.error
 import lib.autosave
 import lib.xml
 
+from gi.repository import GLib
+
 
 ## Base classes
 
@@ -1389,12 +1391,14 @@ class PaintingLayer (SurfaceBackedLayer, core.ExternallyEditable):
         self._surface.end_atomic()
         self.autosave_dirty = True
         if split:
-            try:
-                doc = self.root.doc
-            except AttributeError:
-                pass
-            else:
-                doc.stroke_split_needed(self)
+            GLib.idle_add(self._notify_stroke_split_needed_cb)
+
+    def _notify_stroke_split_needed_cb(self):
+        try:
+            doc = self.root.doc
+        except AttributeError:
+            return
+        doc.stroke_split_needed(self)
 
     def render_stroke(self, stroke):
         """Render a whole captured stroke to the canvas
