@@ -16,6 +16,7 @@ import sys
 import os
 import contextlib
 from warnings import warn
+import threading
 import logging
 logger = logging.getLogger(__name__)
 
@@ -92,6 +93,7 @@ class MyPaintSurface (TileAccessible, TileBlittable, TileCompositable):
         # TODO: pass just what it needs access to, not all of self
         self._backend = mypaintlib.TiledSurface(self)
         self._tiledict = {}
+        self._tiledict_lock = threading.Lock()
         self.observers = []
 
         # Used to implement repeating surfaces, like Background
@@ -125,7 +127,9 @@ class MyPaintSurface (TileAccessible, TileBlittable, TileCompositable):
             DeprecationWarning,
             stacklevel = 2,
         )
-        return self._tiledict.copy()
+        with self._tiledict_lock:
+            d = self._tiledict.copy()
+        return d
 
     def _create_mipmap_surfaces(self):
         """Internal: initializes an internal mipmap lookup table
@@ -162,13 +166,16 @@ class MyPaintSurface (TileAccessible, TileBlittable, TileCompositable):
         return self._backend
 
     def notify_observers(self, *args):
-        for f in self.observers:
-            f(*args)
+        with self._tiledict_lock:
+            for f in self.observers:
+                f(*args)
 
     def clear(self):
-        tiles = self._tiledict.keys()
-        self._tiledict = {}
-        self.notify_observers(*lib.surface.get_tiles_bbox(tiles))
+        with self._tiledict_lock:
+            tiles = self._tiledict.keys()
+            self._tiledict = {}
+            bbox = lib.surface.get_tiles_bbox(tiles)
+        self.notify_observers(*bbox)
         if self.mipmap:
             self.mipmap.clear()
 
@@ -183,6 +190,11 @@ class MyPaintSurface (TileAccessible, TileBlittable, TileCompositable):
         rectangle, the part of the tile outside the rectangle will be
         cleared.
         """
+        with self._tiledict_lock:
+            trimmed_tiles = self._trim_tiles(rect)
+        self.notify_observers(*lib.surface.get_tiles_bbox(trimmed))
+
+    def _trim_tiles(self, rect):
         x, y, w, h = rect
         logger.info("Trim %dx%d%+d%+d", w, h, x, y)
         trimmed = []
@@ -211,8 +223,7 @@ class MyPaintSurface (TileAccessible, TileBlittable, TileCompositable):
                         # This slice is [N-1-r for r in range(ty*N+N - (y+h))].
                         rgba[(y+h - ty*N):N, :, :] = 0  # Clear bottom edge
                 self._mark_mipmap_dirty(tx, ty)
-
-        self.notify_observers(*lib.surface.get_tiles_bbox(trimmed))
+        return trimmed
 
     @contextlib.contextmanager
     def tile_request(self, tx, ty, readonly):
@@ -259,22 +270,35 @@ class MyPaintSurface (TileAccessible, TileBlittable, TileCompositable):
         yield numpy_tile
         self._set_tile_numpy(tx, ty, numpy_tile, readonly)
 
-    def _regenerate_mipmap(self, t, tx, ty):
+    def _regenerate_mipmap(self, tx, ty):
         t = _Tile()
-        self._tiledict[(tx, ty)] = t
+        with self._tiledict_lock:
+            self._tiledict[(tx, ty)] = t
         empty = True
-
         for x in xrange(2):
             for y in xrange(2):
-                src = self.parent._tiledict.get((tx*2 + x, ty*2 + y), transparent_tile)
+                with self.parent._tiledict_lock:
+                    src = self.parent._tiledict.get(
+                        (tx*2 + x, ty*2 + y),
+                        transparent_tile,
+                    )
                 if src is mipmap_dirty_tile:
-                    src = self.parent._regenerate_mipmap(src, tx*2 + x, ty*2 + y)
-                mypaintlib.tile_downscale_rgba16(src.rgba, t.rgba, x*N/2, y*N/2)
+                    src = self.parent._regenerate_mipmap(
+                        tx*2 + x,
+                        ty*2 + y,
+                    )
+                mypaintlib.tile_downscale_rgba16(
+                    src.rgba,
+                    t.rgba,
+                    x*N/2,
+                    y*N/2,
+                )
                 if src.rgba is not transparent_tile.rgba:
                     empty = False
         if empty:
             # rare case, no need to speed it up
-            del self._tiledict[(tx, ty)]
+            with self._tiledict_lock:
+                del self._tiledict[(tx, ty)]
             t = transparent_tile
         return t
 
@@ -288,19 +312,21 @@ class MyPaintSurface (TileAccessible, TileBlittable, TileCompositable):
             tx = tx % (self.looped_size[0] / N)
             ty = ty % (self.looped_size[1] / N)
 
-        t = self._tiledict.get((tx, ty))
-        if t is None:
-            if readonly:
-                t = transparent_tile
-            else:
-                t = _Tile()
-                self._tiledict[(tx, ty)] = t
+        with self._tiledict_lock:
+            t = self._tiledict.get((tx, ty))
+            if t is None:
+                if readonly:
+                    t = transparent_tile
+                else:
+                    t = _Tile()
+                    self._tiledict[(tx, ty)] = t
         if t is mipmap_dirty_tile:
-            t = self._regenerate_mipmap(t, tx, ty)
+            t = self._regenerate_mipmap(tx, ty)
         if t.readonly and not readonly:
             # shared memory, get a private copy for writing
             t = t.copy()
-            self._tiledict[(tx, ty)] = t
+            with self._tiledict_lock:
+                self._tiledict[(tx, ty)] = t
         if not readonly:
             # assert self.mipmap_level == 0
             self._mark_mipmap_dirty(tx, ty)
@@ -317,9 +343,10 @@ class MyPaintSurface (TileAccessible, TileBlittable, TileCompositable):
             if level == 0:
                 continue
             fac = 2**(level)
-            if mipmap._tiledict.get((tx/fac, ty/fac), None) == mipmap_dirty_tile:
-                break
-            mipmap._tiledict[(tx/fac, ty/fac)] = mipmap_dirty_tile
+            with mipmap._tiledict_lock:
+                if mipmap._tiledict.get((tx/fac, ty/fac), None) == mipmap_dirty_tile:
+                    break
+                mipmap._tiledict[(tx/fac, ty/fac)] = mipmap_dirty_tile
 
     def blit_tile_into(self, dst, dst_has_alpha, tx, ty, mipmap_level=0,
                        *args, **kwargs):
@@ -413,9 +440,10 @@ class MyPaintSurface (TileAccessible, TileBlittable, TileCompositable):
 
         """
         sshot = _SurfaceSnapshot()
-        for t in self._tiledict.itervalues():
-            t.readonly = True
-        sshot.tiledict = self._tiledict.copy()
+        with self._tiledict_lock:
+            for t in self._tiledict.itervalues():
+                t.readonly = True
+            sshot.tiledict = self._tiledict.copy()
         return sshot
 
     def load_snapshot(self, sshot):
@@ -424,14 +452,15 @@ class MyPaintSurface (TileAccessible, TileBlittable, TileCompositable):
 
     def _load_tiledict(self, d):
         """Efficiently loads a tiledict, and notifies the observers"""
-        if d == self._tiledict:
-            # common case optimization, called via stroke.redo()
-            # testcase: comparison above (if equal) takes 0.6ms, code below 30ms
-            return
-        old = set(self._tiledict.iteritems())
-        self._tiledict = d.copy()
-        new = set(self._tiledict.iteritems())
-        dirty = old.symmetric_difference(new)
+        with self._tiledict_lock:
+            if d == self._tiledict:
+                # common case optimization, called via stroke.redo()
+                # testcase: comparison above (if equal) takes 0.6ms, code below 30ms
+                return
+            old = set(self._tiledict.iteritems())
+            self._tiledict = d.copy()
+            new = set(self._tiledict.iteritems())
+            dirty = old.symmetric_difference(new)
         for pos, tile in dirty:
             self._mark_mipmap_dirty(*pos)
         bbox = lib.surface.get_tiles_bbox(pos for (pos, tile) in dirty)
@@ -445,14 +474,14 @@ class MyPaintSurface (TileAccessible, TileBlittable, TileCompositable):
         self.load_snapshot(other.save_snapshot())
 
     def _load_from_pixbufsurface(self, s):
-        dirty_tiles = set(self._tiledict.keys())
-        self._tiledict = {}
-
+        with self._tiledict_lock:
+            dirty_tiles = set(self._tiledict.keys())
+            self._tiledict = {}
         for tx, ty in s.get_tile_coords():
             with self.tile_request(tx, ty, readonly=False) as dst:
                 s.blit_tile_into(dst, True, tx, ty)
-
-        dirty_tiles.update(self._tiledict.keys())
+        with self._tiledict_lock:
+            dirty_tiles.update(self._tiledict.keys())
         bbox = lib.surface.get_tiles_bbox(dirty_tiles)
         self.notify_observers(*bbox)
 
@@ -581,7 +610,9 @@ class MyPaintSurface (TileAccessible, TileBlittable, TileCompositable):
         lib.surface.save_as_png(self, filename, *args, **kwargs)
 
     def get_bbox(self):
-        return lib.surface.get_tiles_bbox(self._tiledict)
+        with self._tiledict_lock:
+            bbox = lib.surface.get_tiles_bbox(self._tiledict)
+        return bbox
 
     def get_tile_coords(self):
         """Get a list of the populated tile indices.
@@ -590,16 +621,18 @@ class MyPaintSurface (TileAccessible, TileBlittable, TileCompositable):
         :returns: tile indices with data, (tx, ty)
 
         """
-        return self._tiledict.keys()
+        with self._tiledict_lock:
+            return self._tiledict.keys()
 
     def is_empty(self):
         return not self._tiledict
 
     def remove_empty_tiles(self):
         """Removes tiles from the tiledict which contain no data"""
-        for pos, data in self._tiledict.items():
-            if not data.rgba.any():
-                self._tiledict.pop(pos)
+        with self._tiledict_lock:
+            for pos, data in self._tiledict.items():
+                if not data.rgba.any():
+                    self._tiledict.pop(pos)
 
     def get_move(self, x, y, sort=True):
         """Returns a move object for this surface
@@ -793,8 +826,9 @@ class _TiledSurfaceMove (object):
 
         """
         updated = set()
-        moves_remaining = self._process_moves(n, updated)
-        blanks_remaining = self._process_blanks(n, updated)
+        with self.surface._tiledict_lock:
+            moves_remaining = self._process_moves(n, updated)
+            blanks_remaining = self._process_blanks(n, updated)
         for pos in updated:
             self.surface._mark_mipmap_dirty(*pos)
         bbox = lib.surface.get_tiles_bbox(updated)
