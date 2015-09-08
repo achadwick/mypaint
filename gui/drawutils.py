@@ -163,8 +163,7 @@ def render_brush_preview_pixbuf(brushinfo, max_edge_tiles=4):
             brush.stroke_to(surface.backend, x, y, p, xt, yt, dt)
         surface.end_atomic()
         # Check rendered size
-        tposs = surface.tiledict.keys()
-
+        tposs = surface.get_tile_coords()
         outside = min({tx for tx, ty in tposs}) < 0
         outside = outside or (min({ty for tx, ty in tposs}) < 0)
         outside = outside or (max({tx for tx, ty in tposs}) >= size_in_tiles)

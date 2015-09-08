@@ -69,8 +69,8 @@ class StrokeShape (object):
         shape = cls()
         assert not shape.strokemap
         shape.tasks.add_work(_TileDiffUpdateTask(
-            before.tiledict,
-            after.tiledict,
+            before_dict,
+            after_dict,
             changed_idxs,
             shape.strokemap,
         ))
@@ -228,8 +228,8 @@ class _TileDiffUpdateTask:
     def __init__(self, before, after, changed_idxs, targ):
         """Initialize, ready to update a target StrokeShape with diffs
 
-        :param dict before: Complete pre-stroke tiledict (RO, {xy:Tile})
-        :param dict after: Complete post-stroke tiledict (RO, {xy:Tile})
+        :param dict before: Pre-stroke tiledict copy (RO, {xy:Tile})
+        :param dict after: Post-stroke tiledict copy (RO, {xy:Tile})
         :param set changed_idxs: RW set of (x,y) tile indexes to process
         :param dict targ: Target strokemap (WO, {xy: bytes})
 

@@ -15,6 +15,7 @@ import time
 import sys
 import os
 import contextlib
+from warnings import warn
 import logging
 logger = logging.getLogger(__name__)
 
@@ -90,7 +91,7 @@ class MyPaintSurface (TileAccessible, TileBlittable, TileCompositable):
 
         # TODO: pass just what it needs access to, not all of self
         self._backend = mypaintlib.TiledSurface(self)
-        self.tiledict = {}
+        self._tiledict = {}
         self.observers = []
 
         # Used to implement repeating surfaces, like Background
@@ -114,6 +115,17 @@ class MyPaintSurface (TileAccessible, TileBlittable, TileCompositable):
         self.get_color = self._backend.get_color
         self.get_alpha = self._backend.get_alpha
         self.draw_dab = self._backend.draw_dab
+
+    @property
+    def tiledict(self):
+        warn(
+            "External access to the tiledict is actively discouraged. "
+            "Use tile_request() and get_tile_coords() instead. "
+            "Note that the object returned is now a shallow copy.",
+            DeprecationWarning,
+            stacklevel = 2,
+        )
+        return self._tiledict.copy()
 
     def _create_mipmap_surfaces(self):
         """Internal: initializes an internal mipmap lookup table
@@ -154,8 +166,8 @@ class MyPaintSurface (TileAccessible, TileBlittable, TileCompositable):
             f(*args)
 
     def clear(self):
-        tiles = self.tiledict.keys()
-        self.tiledict = {}
+        tiles = self._tiledict.keys()
+        self._tiledict = {}
         self.notify_observers(*lib.surface.get_tiles_bbox(tiles))
         if self.mipmap:
             self.mipmap.clear()
@@ -174,10 +186,10 @@ class MyPaintSurface (TileAccessible, TileBlittable, TileCompositable):
         x, y, w, h = rect
         logger.info("Trim %dx%d%+d%+d", w, h, x, y)
         trimmed = []
-        for tx, ty in list(self.tiledict.keys()):
+        for tx, ty in list(self._tiledict.keys()):
             if tx*N+N < x or ty*N+N < y or tx*N > x+w or ty*N > y+h:
                 trimmed.append((tx, ty))
-                self.tiledict.pop((tx, ty))
+                self._tiledict.pop((tx, ty))
                 self._mark_mipmap_dirty(tx, ty)
             elif (tx*N < x and x < tx*N+N
                     or ty*N < y and y < ty*N+N
@@ -249,12 +261,12 @@ class MyPaintSurface (TileAccessible, TileBlittable, TileCompositable):
 
     def _regenerate_mipmap(self, t, tx, ty):
         t = _Tile()
-        self.tiledict[(tx, ty)] = t
+        self._tiledict[(tx, ty)] = t
         empty = True
 
         for x in xrange(2):
             for y in xrange(2):
-                src = self.parent.tiledict.get((tx*2 + x, ty*2 + y), transparent_tile)
+                src = self.parent._tiledict.get((tx*2 + x, ty*2 + y), transparent_tile)
                 if src is mipmap_dirty_tile:
                     src = self.parent._regenerate_mipmap(src, tx*2 + x, ty*2 + y)
                 mypaintlib.tile_downscale_rgba16(src.rgba, t.rgba, x*N/2, y*N/2)
@@ -262,7 +274,7 @@ class MyPaintSurface (TileAccessible, TileBlittable, TileCompositable):
                     empty = False
         if empty:
             # rare case, no need to speed it up
-            del self.tiledict[(tx, ty)]
+            del self._tiledict[(tx, ty)]
             t = transparent_tile
         return t
 
@@ -276,19 +288,19 @@ class MyPaintSurface (TileAccessible, TileBlittable, TileCompositable):
             tx = tx % (self.looped_size[0] / N)
             ty = ty % (self.looped_size[1] / N)
 
-        t = self.tiledict.get((tx, ty))
+        t = self._tiledict.get((tx, ty))
         if t is None:
             if readonly:
                 t = transparent_tile
             else:
                 t = _Tile()
-                self.tiledict[(tx, ty)] = t
+                self._tiledict[(tx, ty)] = t
         if t is mipmap_dirty_tile:
             t = self._regenerate_mipmap(t, tx, ty)
         if t.readonly and not readonly:
             # shared memory, get a private copy for writing
             t = t.copy()
-            self.tiledict[(tx, ty)] = t
+            self._tiledict[(tx, ty)] = t
         if not readonly:
             # assert self.mipmap_level == 0
             self._mark_mipmap_dirty(tx, ty)
@@ -305,9 +317,9 @@ class MyPaintSurface (TileAccessible, TileBlittable, TileCompositable):
             if level == 0:
                 continue
             fac = 2**(level)
-            if mipmap.tiledict.get((tx/fac, ty/fac), None) == mipmap_dirty_tile:
+            if mipmap._tiledict.get((tx/fac, ty/fac), None) == mipmap_dirty_tile:
                 break
-            mipmap.tiledict[(tx/fac, ty/fac)] = mipmap_dirty_tile
+            mipmap._tiledict[(tx/fac, ty/fac)] = mipmap_dirty_tile
 
     def blit_tile_into(self, dst, dst_has_alpha, tx, ty, mipmap_level=0,
                        *args, **kwargs):
@@ -401,9 +413,9 @@ class MyPaintSurface (TileAccessible, TileBlittable, TileCompositable):
 
         """
         sshot = _SurfaceSnapshot()
-        for t in self.tiledict.itervalues():
+        for t in self._tiledict.itervalues():
             t.readonly = True
-        sshot.tiledict = self.tiledict.copy()
+        sshot.tiledict = self._tiledict.copy()
         return sshot
 
     def load_snapshot(self, sshot):
@@ -412,13 +424,13 @@ class MyPaintSurface (TileAccessible, TileBlittable, TileCompositable):
 
     def _load_tiledict(self, d):
         """Efficiently loads a tiledict, and notifies the observers"""
-        if d == self.tiledict:
+        if d == self._tiledict:
             # common case optimization, called via stroke.redo()
             # testcase: comparison above (if equal) takes 0.6ms, code below 30ms
             return
-        old = set(self.tiledict.iteritems())
-        self.tiledict = d.copy()
-        new = set(self.tiledict.iteritems())
+        old = set(self._tiledict.iteritems())
+        self._tiledict = d.copy()
+        new = set(self._tiledict.iteritems())
         dirty = old.symmetric_difference(new)
         for pos, tile in dirty:
             self._mark_mipmap_dirty(*pos)
@@ -433,14 +445,14 @@ class MyPaintSurface (TileAccessible, TileBlittable, TileCompositable):
         self.load_snapshot(other.save_snapshot())
 
     def _load_from_pixbufsurface(self, s):
-        dirty_tiles = set(self.tiledict.keys())
-        self.tiledict = {}
+        dirty_tiles = set(self._tiledict.keys())
+        self._tiledict = {}
 
         for tx, ty in s.get_tile_coords():
             with self.tile_request(tx, ty, readonly=False) as dst:
                 s.blit_tile_into(dst, True, tx, ty)
 
-        dirty_tiles.update(self.tiledict.keys())
+        dirty_tiles.update(self._tiledict.keys())
         bbox = lib.surface.get_tiles_bbox(dirty_tiles)
         self.notify_observers(*bbox)
 
@@ -482,8 +494,8 @@ class MyPaintSurface (TileAccessible, TileBlittable, TileCompositable):
         string when conversion or PNG reading fails.
 
         """
-        dirty_tiles = set(self.tiledict.keys())
-        self.tiledict = {}
+        dirty_tiles = set(self._tiledict.keys())
+        self._tiledict = {}
 
         state = {}
         state['buf'] = None  # array of height N, width depends on image
@@ -544,7 +556,7 @@ class MyPaintSurface (TileAccessible, TileBlittable, TileCompositable):
         consume_buf()  # also process the final chunk of data
         logger.debug("PNG loader flags: %r", flags)
 
-        dirty_tiles.update(self.tiledict.keys())
+        dirty_tiles.update(self._tiledict.keys())
         bbox = lib.surface.get_tiles_bbox(dirty_tiles)
         self.notify_observers(*bbox)
 
@@ -552,7 +564,7 @@ class MyPaintSurface (TileAccessible, TileBlittable, TileCompositable):
         return state['frame_size']
 
     def render_as_pixbuf(self, *args, **kwargs):
-        if not self.tiledict:
+        if not self._tiledict:
             logger.warning('empty surface')
         t0 = time.time()
         kwargs['alpha'] = True
@@ -564,12 +576,12 @@ class MyPaintSurface (TileAccessible, TileBlittable, TileCompositable):
         if 'alpha' not in kwargs:
             kwargs['alpha'] = True
 
-        if len(self.tiledict) == 1 and self.looped:
+        if len(self._tiledict) == 1 and self.looped:
             kwargs['single_tile_pattern'] = True
         lib.surface.save_as_png(self, filename, *args, **kwargs)
 
     def get_bbox(self):
-        return lib.surface.get_tiles_bbox(self.tiledict)
+        return lib.surface.get_tiles_bbox(self._tiledict)
 
     def get_tile_coords(self):
         """Get a list of the populated tile indices.
@@ -581,13 +593,13 @@ class MyPaintSurface (TileAccessible, TileBlittable, TileCompositable):
         return self._tiledict.keys()
 
     def is_empty(self):
-        return not self.tiledict
+        return not self._tiledict
 
     def remove_empty_tiles(self):
         """Removes tiles from the tiledict which contain no data"""
-        for pos, data in self.tiledict.items():
+        for pos, data in self._tiledict.items():
             if not data.rgba.any():
-                self.tiledict.pop(pos)
+                self._tiledict.pop(pos)
 
     def get_move(self, x, y, sort=True):
         """Returns a move object for this surface
@@ -636,7 +648,7 @@ class _TiledSurfaceMove (object):
         >>> surf = MyPaintSurface()
         >>> with surf.tile_request(10, 10, readonly=False) as a:
         ...     a[...] = 1<<15
-        >>> len(surf.tiledict)
+        >>> len(surf._tiledict)
         1
         >>> move = surf.get_move(N/2, N/2, sort=True)
 
@@ -665,7 +677,7 @@ class _TiledSurfaceMove (object):
     Moves which are not an exact multiple of the tile size generally
     make more tiles due to slicing and recombining.
 
-        >>> len(surf.tiledict)
+        >>> len(surf._tiledict)
         4
 
     Moves which are an exact multiple of the tile size are processed
@@ -674,14 +686,14 @@ class _TiledSurfaceMove (object):
         >>> surf = MyPaintSurface()
         >>> with surf.tile_request(-3, 2, readonly=False) as a:
         ...     a[...] = 1<<15
-        >>> surf.tiledict.keys()
+        >>> surf._tiledict.keys()
         [(-3, 2)]
         >>> move = surf.get_move(0, 0, sort=False)
         >>> move.update(N*3, -N*2)
         >>> move.process(n=1)   # single op suffices
         False
         >>> move.cleanup()
-        >>> surf.tiledict.keys()
+        >>> surf._tiledict.keys()
         [(0, 0)]
         >>> # Please excuse the doctest for this special case
         >>> # just regression-proofing.
@@ -736,7 +748,7 @@ class _TiledSurfaceMove (object):
         self.written = set()
         # Tile indices to be cleared during processing,
         # unless they've been written to
-        self.blank_queue = self.surface.tiledict.keys()  # fresh!
+        self.blank_queue = self.surface._tiledict.keys()  # fresh!
         if self.sort:
             x, y = self.start_pos
             tx = (x + dx) // N
@@ -815,7 +827,7 @@ class _TiledSurfaceMove (object):
                     targ_t = targ_tx, targ_ty
                     if is_integral:
                         # We're lucky. Perform a straight data copy.
-                        self.surface.tiledict[targ_t] = src_tile.copy()
+                        self.surface._tiledict[targ_t] = src_tile.copy()
                         updated.add(targ_t)
                         self.written.add(targ_t)
                         continue
@@ -824,12 +836,12 @@ class _TiledSurfaceMove (object):
                     if targ_t in self.written:
                         # Reuse a target tile made earlier in this
                         # update cycle
-                        targ_tile = self.surface.tiledict.get(targ_t, None)
+                        targ_tile = self.surface._tiledict.get(targ_t, None)
                     if targ_tile is None:
                         # Create and store a new blank target tile
                         # to avoid corruption
                         targ_tile = _Tile()
-                        self.surface.tiledict[targ_t] = targ_tile
+                        self.surface._tiledict[targ_t] = targ_tile
                         self.written.add(targ_t)
                     # Copy this source slice to the destination
                     targ_tile.rgba[targ_y0:targ_y1, targ_x0:targ_x1] \
@@ -838,8 +850,8 @@ class _TiledSurfaceMove (object):
             # The source tile has been fully processed at this point,
             # and can be removed from the output dict if it hasn't
             # also been written to.
-            if src_t in self.surface.tiledict and src_t not in self.written:
-                self.surface.tiledict.pop(src_t, None)
+            if src_t in self.surface._tiledict and src_t not in self.written:
+                self.surface._tiledict.pop(src_t, None)
                 updated.add(src_t)
         # Move on, and return whether we're complete
         self.chunks_i += n
@@ -859,7 +871,7 @@ class _TiledSurfaceMove (object):
         while len(self.blank_queue) > 0 and n > 0:
             t = self.blank_queue.pop(0)
             if t not in self.written:
-                self.surface.tiledict.pop(t, None)
+                self.surface._tiledict.pop(t, None)
                 updated.add(t)
                 n -= 1
         return len(self.blank_queue) > 0
