@@ -143,6 +143,7 @@ class MyPaintSurface (TileAccessible, TileBlittable, TileCompositable):
         bbox = self._backend.end_atomic()
         if (bbox[2] > 0 and bbox[3] > 0):
             self.notify_observers(*bbox)
+        return bbox
 
     @property
     def backend(self):
