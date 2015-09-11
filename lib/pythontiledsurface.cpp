@@ -27,8 +27,6 @@ tile_request_start(MyPaintTiledSurface *tiled_surface, MyPaintTileRequest *reque
     const int ty = request->ty;
     PyArrayObject* rgba = NULL;
 
-#pragma omp critical
-{
     rgba = (PyArrayObject*)PyObject_CallMethod(self->py_obj, "_get_tile_numpy", "(iii)", tx, ty, readonly);
     if (rgba == NULL) {
         request->buffer = NULL;
@@ -50,9 +48,6 @@ tile_request_start(MyPaintTiledSurface *tiled_surface, MyPaintTileRequest *reque
         Py_DECREF((PyObject *)rgba);
         request->buffer = (uint16_t*)PyArray_DATA(rgba);
     }
-} // #end pragma opt critical
-
-
 }
 
 static void
@@ -60,6 +55,18 @@ tile_request_end(MyPaintTiledSurface *tiled_surface, MyPaintTileRequest *request
 {
     // We modify tiles directly, so don't need to do anything here
 }
+
+
+static void
+mypaint_python_tiled_surface_process_tiles (MyPaintTiledSurface *self,
+                                            MyPaintTileRequest **requests,
+                                            int tiles_n)
+{
+    Py_BEGIN_ALLOW_THREADS
+    mypaint_tiled_surface_process_tiles (self, requests, tiles_n);
+    Py_END_ALLOW_THREADS
+}
+
 
 MyPaintPythonTiledSurface *
 mypaint_python_tiled_surface_new(PyObject *py_object)
@@ -69,6 +76,9 @@ mypaint_python_tiled_surface_new(PyObject *py_object)
     mypaint_tiled_surface_init(&self->parent, tile_request_start, tile_request_end);
     self->parent.threadsafe_tile_requests = TRUE;
 
+    // MyPaintTiledSurface vfuncs
+    self->parent.process_tiles = mypaint_python_tiled_surface_process_tiles;
+
     // MyPaintSurface vfuncs
     self->parent.parent.destroy = free_tiledsurf;
 
@@ -76,6 +86,7 @@ mypaint_python_tiled_surface_new(PyObject *py_object)
 
     return self;
 }
+
 
 void free_tiledsurf(MyPaintSurface *surface)
 {
