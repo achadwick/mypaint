@@ -331,7 +331,13 @@ class SurfaceBackedLayer (core.LayerBase, lib.autosave.Autosaveable):
     ## Rendering
 
     def get_tile_coords(self):
-        return self._surface.get_tiles().keys()
+        """Get a list of the populated tile indices.
+
+        :rtype: list
+        :returns: tile indices with data, (tx, ty)
+
+        """
+        return self._surface.get_tile_coords()
 
     def blit_tile_into(self, dst, dst_has_alpha, tx, ty, mipmap_level=0,
                        **kwargs):

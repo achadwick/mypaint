@@ -1116,7 +1116,7 @@ class CanvasRenderer(gtk.DrawingArea, DrawCursorMixin):
             fake_alpha_check_tile = self._fake_alpha_check_tile
 
         # Determine which tiles to render.
-        tiles = list(surface.get_tiles())
+        tiles = surface.get_tile_coords()
         if sparse:
             tiles = [
                 (tx, ty) for (tx, ty) in tiles

@@ -130,10 +130,16 @@ class Surface (TileAccessible, TileBlittable):
                 self.tile_memory_dict[(self.tx+tx, self.ty+ty)] = buf
 
     def get_bbox(self):
-        return lib.surface.get_tiles_bbox(self.get_tiles())
+        return lib.surface.get_tiles_bbox(self.get_tile_coords())
 
-    def get_tiles(self):
-        return self.tile_memory_dict
+    def get_tile_coords(self):
+        """Get a list of the populated tile indices.
+
+        :rtype: list
+        :returns: tile indices with data, (tx, ty)
+
+        """
+        return self.tile_memory_dict.keys()
 
     @contextlib.contextmanager
     def tile_request(self, tx, ty, readonly):
@@ -179,7 +185,7 @@ def render_as_pixbuf(surface, *rect, **kwargs):
     x, y, w, h, = rect
     s = Surface(x, y, w, h)
     tn = 0
-    for tx, ty in s.get_tiles():
+    for tx, ty in s.get_tile_coords():
         with s.tile_request(tx, ty, readonly=False) as dst:
             surface.blit_tile_into(dst, alpha, tx, ty,
                                    mipmap_level=mipmap_level,

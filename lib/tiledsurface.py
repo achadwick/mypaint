@@ -436,7 +436,7 @@ class MyPaintSurface (TileAccessible, TileBlittable, TileCompositable):
         dirty_tiles = set(self.tiledict.keys())
         self.tiledict = {}
 
-        for tx, ty in s.get_tiles():
+        for tx, ty in s.get_tile_coords():
             with self.tile_request(tx, ty, readonly=False) as dst:
                 s.blit_tile_into(dst, True, tx, ty)
 
@@ -571,8 +571,14 @@ class MyPaintSurface (TileAccessible, TileBlittable, TileCompositable):
     def get_bbox(self):
         return lib.surface.get_tiles_bbox(self.tiledict)
 
-    def get_tiles(self):
-        return self.tiledict
+    def get_tile_coords(self):
+        """Get a list of the populated tile indices.
+
+        :rtype: list
+        :returns: tile indices with data, (tx, ty)
+
+        """
+        return self._tiledict.keys()
 
     def is_empty(self):
         return not self.tiledict
