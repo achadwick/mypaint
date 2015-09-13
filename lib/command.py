@@ -413,9 +413,11 @@ class Brushwork (Command):
         while True:
             data = self._paint_queue.get(block=True)
             if data is None:
+                self._paint_queue.task_done()
                 break
             brush, layer, x, y, pressure, xtilt, ytilt, dtime = data
             layer.stroke_to(brush, x, y, pressure, xtilt, ytilt, dtime)
+            self._paint_queue.task_done()
         logger.debug("paint thread: stopping")
         assert self._recording_finished
 
