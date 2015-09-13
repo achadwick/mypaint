@@ -13,8 +13,7 @@
 static const int TILE_SIZE = MYPAINT_TILE_SIZE;
 static const int MAX_MIPMAP_LEVEL = MYPAINT_MAX_MIPMAP_LEVEL;
 
-// Implementation of tiled surface backend
-#include "pythontiledsurface.cpp"
+#include "pythontiledsurface.h"
 
 #include <vector>
 

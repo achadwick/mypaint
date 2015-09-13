@@ -1,5 +1,6 @@
 /* This file is part of MyPaint.
  * Copyright (C) 2008-2011 by Martin Renold <martinxyz@gmx.ch>
+ * Copyright (C) 2011-2015 by the MyPaint Development Team
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -8,6 +9,15 @@
  */
 
 #include "pythontiledsurface.h"
+
+#include "common.hpp"
+
+#define NPY_NO_DEPRECATED_API NPY_1_7_API_VERSION
+#define NO_IMPORT_ARRAY
+#include <numpy/arrayobject.h>
+
+#include <mypaint-tiled-surface.h>
+#include <mypaint-test-surface.h>
 
 struct _MyPaintPythonTiledSurface {
     MyPaintTiledSurface parent;
