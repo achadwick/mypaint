@@ -40,11 +40,12 @@ tile_request_start(MyPaintTiledSurface *tiled_surface, MyPaintTileRequest *reque
     rgba = (PyArrayObject*)PyObject_CallMethod(self->py_obj, "_get_tile_numpy", "(iii)", tx, ty, readonly);
     if (rgba == NULL) {
         request->buffer = NULL;
-        printf("Python exception during get_tile_numpy()!\n");
+        printf("Python exception during _get_tile_numpy()!\n");
         if (PyErr_Occurred()) {
             PyErr_Print();
         }
-    } else {
+    }
+    else {
 
 #ifdef HEAVY_DEBUG
         assert(PyArray_NDIM(rgba) == 3);
@@ -54,16 +55,44 @@ tile_request_start(MyPaintTiledSurface *tiled_surface, MyPaintTileRequest *reque
         assert(PyArray_ISCARRAY(rgba));
         assert(PyArray_TYPE(rgba) == NPY_UINT16);
 #endif
-        // tiledsurface.py will keep a reference in its tiledict, at least until the final end_atomic()
-        Py_DECREF((PyObject *)rgba);
+        // The underlying tile storage, for worker threads to process.
         request->buffer = (uint16_t*)PyArray_DATA(rgba);
+        // Keep a reference to the array object itself,
+        // till tile_request_end() is called.
+        request->context = (gpointer)rgba;
     }
 }
 
 static void
 tile_request_end(MyPaintTiledSurface *tiled_surface, MyPaintTileRequest *request)
 {
-    // We modify tiles directly, so don't need to do anything here
+    MyPaintPythonTiledSurface *self = (MyPaintPythonTiledSurface *)tiled_surface;
+
+    const gboolean readonly = request->readonly;
+    const int tx = request->tx;
+    const int ty = request->ty;
+    PyObject *result = NULL;
+    PyArrayObject* rgba = NULL;
+
+    rgba = (PyArrayObject *) request->context;
+    result = (PyObject*)PyObject_CallMethod(self->py_obj,
+                                            "_set_tile_numpy", "(iiOi)",
+                                            tx, ty, rgba, readonly);
+    if (rgba != NULL) {
+        Py_DECREF((PyObject *)rgba);
+        request->context = NULL;
+        request->buffer = NULL;
+    }
+
+    if (result == NULL) {
+        printf("Python exception during _set_tile_numpy()!\n");
+        if (PyErr_Occurred()) {
+            PyErr_Print();
+        }
+    }
+    else {
+        Py_DECREF((PyObject *)result);
+    }
 }
 
 

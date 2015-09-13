@@ -306,10 +306,23 @@ class MyPaintSurface (TileAccessible, TileBlittable, TileCompositable):
         return t
 
     def _get_tile_numpy(self, tx, ty, readonly):
+        """Gets the NumPy data array for a tile.
+
+        :param int tx: Requested tile's X coord (tile-based).
+        :param int ty: Requested tile's Y coord (tile-based).
+        :param numpy.ndarray rgba: The processed tile data array.
+        :param bool readonly: Tile request expects to write data.
+        :returns: The requested RGBA tile data.
+        :rtype: numpy.ndarray
+
+        This is called from mypaintlib C code in preparation for
+        multithreaded brushstroke rendering, and by tile_request(). In
+        both cases, it is paired with a later call to _set_tile_numpy().
+
+        """
+
         # OPTIMIZE: do some profiling to check if this function is a bottleneck
         #           yes it is
-        # Note: we must return memory that stays valid for writing until the
-        # last end_atomic(), because of the caching in tiledsurface.hpp.
 
         if self.looped:
             tx = tx % (self.looped_size[0] / N)
@@ -330,13 +343,31 @@ class MyPaintSurface (TileAccessible, TileBlittable, TileCompositable):
             t = t.copy()
             with self._tiledict_lock:
                 self._tiledict[(tx, ty)] = t
-        if not readonly:
-            # assert self.mipmap_level == 0
-            self._mark_mipmap_dirty(tx, ty)
         return t.rgba
 
-    def _set_tile_numpy(self, tx, ty, obj, readonly):
-        pass  # Data can be modified directly, no action needed
+    def _set_tile_numpy(self, tx, ty, rgba, readonly):
+        """Sets a tile's data from a NumPy array.
+
+        :param int tx: Requested tile's X coord (tile-based).
+        :param int ty: Requested tile's Y coord (tile-based).
+        :param numpy.ndarray rgba: The processed tile data array.
+        :param bool readonly: Tile request expected to write data.
+
+        This is called from mypaintlib C code after multithreaded
+        brushstroke rendering, and by tile_request(). In both cases, it
+        is paired with an earlier call to _get_tile_numpy().
+
+        In the current implementation, all workers operate directly on
+        the NumPy array's data, so the array arg is be the same one
+        accessed or created by _get_tile_numpy(). Therefore, this method
+        doesn't do anything beyond mark the mipmaps as dirty for
+        read/write request pairs.
+
+        """
+        # Need to do this after a block of stroke rendering has
+        # concluded in order to coordinate the mipmaps with redraws.
+        if not readonly:
+            self._mark_mipmap_dirty(tx, ty)
 
     def _mark_mipmap_dirty(self, tx, ty):
         #assert self.mipmap_level == 0
