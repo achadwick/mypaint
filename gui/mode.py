@@ -689,11 +689,12 @@ class BrushworkModeMixin (InteractionMode):
         self.__active_brushwork[model] = cmd
         model.stroke_split_needed += self.__record_split_due
 
-    def brushwork_commit(self, model, abrupt=False):
+    def brushwork_commit(self, model, abrupt=False, immediate=False):
         """Commits any active brushwork for a model to the command stack
 
         :param lib.document.Document model: The model to commit work to
         :param bool abrupt: End with a faked zero pressure "stroke_to()"
+        :param bool immediate: Discard any still-rendering stroke data
 
         This only makes a new entry on the command stack if
         the currently active brushwork segment made
@@ -713,7 +714,7 @@ class BrushworkModeMixin (InteractionMode):
             pressure = 0.0
             dtime = 0.0
             cmd.stroke_to(dtime, x, y, pressure, xtilt, ytilt)
-        changed = cmd.stop_recording(revert=False)
+        changed = cmd.stop_recording(revert=False, immediate=immediate)
         if changed:
             model.do(cmd)
 
@@ -736,12 +737,12 @@ class BrushworkModeMixin (InteractionMode):
         cmd = self.__active_brushwork.pop(model, None)
         if cmd is None:
             return
-        cmd.stop_recording(revert=True)
+        cmd.stop_recording(revert=True, immediate=True)
 
-    def brushwork_commit_all(self, abrupt=False):
+    def brushwork_commit_all(self, abrupt=False, immediate=False):
         """Commits all active brushwork"""
         for model in list(self.__active_brushwork.keys()):
-            self.brushwork_commit(model, abrupt=abrupt)
+            self.brushwork_commit(model, abrupt=abrupt, immediate=immediate)
 
     def brushwork_rollback_all(self):
         """Rolls back all active brushwork"""
@@ -783,28 +784,40 @@ class BrushworkModeMixin (InteractionMode):
     def leave(self, **kwds):
         """Leave mode, committing outstanding brushwork as necessary
 
-        The leave action defined here is careful to tail off strokes
-        cleanly: certain subclasses are geared towards fast capture of
-        data and queued delivery of stroke information, so we have to
-        reset the brush engine's idea of pressure fast. If we don't, an
-        interrupted queued stroke can result in a *huge* sequence of
-        dabs from the last processed position to wherever the cursor is
-        right now.
+        The leave action defined here
+        is careful to tail off strokes cleanly.
+        Certain subclasses are geared towards fast capture of data
+        and queued delivery of stroke information,
+        so we have to reset the brush engine's idea of pressure fast.
+        If we don't, an interrupted queued stroke
+        can result in a *huge* sequence of dabs
+        from the last processed position
+        to wherever the cursor is right now.
 
-        This leave() knows about the mode stack, and only commits if it
-        knows it isn't still stacked. That's to allow temporary view
-        manipulation modes to work without disrupting `gui.inktool`'s
-        mode, which normally has a lot pending.
+        Setting the `resetting` keyword argument to True
+        abandons any queued stroke information,
+        and does commits the current state.
+        This is used by the Escape key handler in the GUI.
+
+        This implementation knows about the mode stack,
+        and only commits if it knows its object isn't still stacked.
+        This allows temporary view manipulation modes
+        to work without disrupting `gui.inktool`'s mode,
+        which normally has a lot pending.
 
         """
-        logger.debug("BrushworkModeMixin: leave()")
+        logger.debug("BrushworkModeMixin: leave() kwds=%r", kwds)
         still_stacked = False
         for mode in self.doc.modes:
             if mode is self:
                 still_stacked = True
                 break
-        if not still_stacked:
-            self.brushwork_commit_all(abrupt=True)
+        immediate = kwds.get("resetting", False)
+        if immediate or not still_stacked:
+            self.brushwork_commit_all(
+                abrupt = True,
+                immediate = immediate,
+            )
         super(BrushworkModeMixin, self).leave(**kwds)
 
     def checkpoint(self, **kwargs):
