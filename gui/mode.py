@@ -290,7 +290,7 @@ class InteractionMode (object):
         self.doc = doc
         assert not hasattr(super(InteractionMode, self), "enter")
 
-    def leave(self):
+    def leave(self, **kwds):
         """Leaves the mode: called by `ModeStack.pop()` etc.
 
         This is called when an active mode becomes inactive, i.e. when it is
@@ -1356,7 +1356,7 @@ class ModeStack (object):
             old_top_mode = self._stack[-1]
         while len(self._stack) > 0:
             old_mode = self._stack.pop(-1)
-            old_mode.leave()
+            old_mode.leave(resetting=True)
             if len(self._stack) > 0:
                 self._stack[-1].enter(doc=self._doc)
         top_mode = self._check(replacement)
