@@ -123,7 +123,7 @@ class TiledDrawWidget (gtk.EventBox):
                 return (tdw, win_x, win_y)
         return (None, -1, -1)
 
-    def __init__(self):
+    def __init__(self, idle_redraw_priority=None):
         """Instantiate a TiledDrawWidget.
 
         """
@@ -156,7 +156,10 @@ class TiledDrawWidget (gtk.EventBox):
 
         self.last_painting_pos = None
 
-        self.renderer = CanvasRenderer(self)
+        self.renderer = CanvasRenderer(
+            self,
+            idle_redraw_priority = idle_redraw_priority,
+        )
         self.add(self.renderer)
         self.renderer.update_cursor()  # get the initial cursor right
 
@@ -668,11 +671,14 @@ class CanvasRenderer(gtk.DrawingArea, DrawCursorMixin):
 
     ## Method defs
 
-    def __init__(self, tdw):
+    def __init__(self, tdw, idle_redraw_priority=None):
         gtk.DrawingArea.__init__(self)
         self.init_draw_cursor()
 
         self.connect("draw", self.draw_cb)
+        self._idle_redraw_priority = idle_redraw_priority
+        self._idle_redraw_queue = []
+        self._idle_redraw_src_id = None
 
         self.connect("state-changed", self._state_changed_cb)
 
@@ -825,6 +831,8 @@ class CanvasRenderer(gtk.DrawingArea, DrawCursorMixin):
         self.is_sensitive = sensitive
         self.update_cursor()
 
+    ## Redrawing
+
     def canvas_modified_cb(self, model, x, y, w, h):
         """Handles area redraw notifications from the underlying model"""
 
@@ -840,7 +848,57 @@ class CanvasRenderer(gtk.DrawingArea, DrawCursorMixin):
         # Create an expose event with the event bbox rotated/zoomed.
         corners = [(x, y), (x+w, y), (x, y+h), (x+w, y+h)]
         corners = [self.model_to_display(x, y) for (x, y) in corners]
-        self.queue_draw_area(*helpers.rotated_rectangle_bbox(corners))
+        bbox = helpers.rotated_rectangle_bbox(corners)
+        self.queue_draw_area(*bbox)
+
+    def queue_draw(self):
+        if self._idle_redraw_priority is None:
+            gtk.DrawingArea.queue_draw(self)
+            return
+        self._queue_idle_redraw(None)
+
+    def queue_draw_area(self, x, y, w, h):
+        if self._idle_redraw_priority is None:
+            gtk.DrawingArea.queue_draw_area(self, x, y, w, h)
+            return
+        bbox = helpers.Rect(x, y, w, h)
+        self._queue_idle_redraw(bbox)
+
+    def _queue_idle_redraw(self, bbox):
+        queue = self._idle_redraw_queue
+        if bbox is None:
+            queue[:] = []
+        elif None in queue:
+            return
+        else:
+            queue[:] = [b for b in queue if not bbox.contains(b)]
+            for b in queue:
+                if b.contains(bbox):
+                    return
+        queue.append(bbox)
+        if self._idle_redraw_src_id is not None:
+            return
+        src_id = glib.idle_add(
+            self._idle_redraw_cb,
+            priority = self._idle_redraw_priority,
+        )
+        self._idle_redraw_src_id = src_id
+
+    def _idle_redraw_cb(self):
+        assert self._idle_redraw_src_id is not None
+        queue = self._idle_redraw_queue
+        if len(queue) > 0:
+            bbox = queue.pop(0)
+            if bbox is None:
+                gtk.DrawingArea.queue_draw(self)
+            else:
+                gtk.DrawingArea.queue_draw_area(self, *bbox)
+        if len(queue) == 0:
+            self._idle_redraw_src_id = None
+            return False
+        return True
+
+    ## Redraw events
 
     def current_layer_changed_cb(self, rootstack, path):
         self.update_cursor()
@@ -853,6 +911,8 @@ class CanvasRenderer(gtk.DrawingArea, DrawCursorMixin):
 
     def frame_updated_cb(self, model, old_frame, new_frame):
         self.queue_draw()
+
+    ## Transformations and coords
 
     def display_to_model(self, disp_x, disp_y):
         """Converts display coordinates to model coordinates.
@@ -934,7 +994,7 @@ class CanvasRenderer(gtk.DrawingArea, DrawCursorMixin):
         :returns: (clipregion, sparse)
         :rtype: tuple
 
-        The clip region return value is a tuple (x, y, w, h) containing
+        The clip region return value is a lib.helpers.Rect containing
         the area to redraw in display coordinates, or None.
 
         This also determines whether the redraw is "sparse", meaning
@@ -977,17 +1037,22 @@ class CanvasRenderer(gtk.DrawingArea, DrawCursorMixin):
         clip_exists, rect = gdk.cairo_get_clip_rectangle(cr)
         if clip_exists:
             # It's a wrapped cairo_rectangle_int_t, CairoRectangleInt
-            area = (rect.x, rect.y, rect.width, rect.height)
-            clip_region = area
-            sparse = (cx < rect.x or cx > rect.x+rect.width
-                      or cy < rect.y or cy > rect.y+rect.height)
+            # Convert to a better representation for our purposes,
+            # noting https://github.com/mypaint/mypaint/issues/433
+            rect = helpers.Rect(rect.x, rect.y, rect.width, rect.height)
+            sparse = (
+                cx < rect.x
+                or cx > (rect.x + rect.w)
+                or cy < rect.y
+                or cy > (rect.y + rect.h)
+            )
         else:
-            clip_region = None
+            rect = None
             sparse = False
 
-        return clip_region, sparse
+        return rect, sparse
 
-    def _tile_is_visible(self, tx, ty, transformation, clip_region,
+    def _tile_is_visible(self, tx, ty, transformation, clip_rect,
                          translation_only):
         """Tests whether an individual tile is visible.
 
@@ -1001,8 +1066,10 @@ class CanvasRenderer(gtk.DrawingArea, DrawCursorMixin):
         > (speedup clearly visible; slowdown measurable when always
         > executing this code)
 
-        but I'm not 100% certain that GTK3 does panning redraws this
-        way. So perhaps this method is uneccessary?
+        I'm not 100% certain that GTK3 does panning redraws this way,
+        so perhaps this method is uneccessary for those?
+        However this method is always used when rendering during
+        painting, or other activities that send partial updates.
 
         """
         N = tiledsurface.N
@@ -1019,13 +1086,8 @@ class CanvasRenderer(gtk.DrawingArea, DrawCursorMixin):
                 for (x_, y_) in corners
             ]
             bbox = helpers.rotated_rectangle_bbox(corners)
-
-        c_r = gdk.Rectangle()
-        c_r.x, c_r.y, c_r.width, c_r.height = clip_region
-        bb_r = gdk.Rectangle()
-        bb_r.x, bb_r.y, bb_r.width, bb_r.height = bbox
-        intersects, isect_r = gdk.rectangle_intersect(bb_r, c_r)
-        return intersects
+        tile_rect = helpers.Rect(*bbox)
+        return clip_rect.overlaps(tile_rect)
 
     def _render_prepare(self, cr):
         """Prepares a blank pixbuf & other details for later rendering.
@@ -1041,7 +1103,7 @@ class CanvasRenderer(gtk.DrawingArea, DrawCursorMixin):
         allocation = self.get_allocation()
         w, h = allocation.width, allocation.height
         device_bbox = (0, 0, w, h)
-        clip_region, sparse = self._render_get_clip_region(cr, device_bbox)
+        clip_rect, sparse = self._render_get_clip_region(cr, device_bbox)
         x, y, w, h = device_bbox
 
         # Random grey behind what we render if visualization is needed.
@@ -1092,10 +1154,10 @@ class CanvasRenderer(gtk.DrawingArea, DrawCursorMixin):
         # https://bugs.freedesktop.org/show_bug.cgi?id=28670
 
         surface = pixbufsurface.Surface(x1, y1, x2-x1+1, y2-y1+1)
-        return transformation, surface, sparse, mipmap_level, clip_region
+        return transformation, surface, sparse, mipmap_level, clip_rect
 
     def _render_execute(self, cr, transformation, surface, sparse,
-                        mipmap_level, clip_region):
+                        mipmap_level, clip_rect):
         """Renders tiles into a prepared pixbufsurface, then blits it.
 
 
@@ -1124,7 +1186,7 @@ class CanvasRenderer(gtk.DrawingArea, DrawCursorMixin):
                     tx,
                     ty,
                     transformation,
-                    clip_region,
+                    clip_rect,
                     translation_only,
                 )
             ]

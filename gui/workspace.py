@@ -1179,7 +1179,24 @@ class ToolStack (Gtk.EventBox):
         ## ToolStack structure: event callbacks
 
         def _page_added_cb(self, notebook, child, page_num):
-            GLib.idle_add(self._toolstack._update_structure)
+            stack = self._toolstack
+            GLib.idle_add(stack._update_structure)
+            # Reinstate the previous size on the divider
+            # if this is the result of dragging a tab out
+            # into a new window.
+            try:
+                size = child.__prev_size
+            except AttributeError:
+                return
+            if self is not stack._get_first_notebook():
+                return
+            if self.get_n_pages() != 1:
+                return
+            # The size-setting must be done outside the event handler
+            # for it to take effect.
+            w, h = size
+            cb = lambda: stack._set_first_paned_position(h) and False
+            GLib.idle_add(cb)
 
         def _page_removed_cb(self, notebook, child, page_num):
             GLib.idle_add(self._toolstack._update_structure)
@@ -1285,55 +1302,19 @@ class ToolStack (Gtk.EventBox):
             self._toolstack.workspace._tool_tab_drag_end_cb()
 
         def _create_window_cb(self, notebook, page, x, y):
-            # Dragging into empty space creates a new stack in a new window,
-            # and stashes the page there.
-
-            # Note: it looks like this function wasn't written correctly
-            # in the first instance: the handler is supposed to create
-            # the new window and a new notebook in it, and return the
-            # notebook so that GTK can move the tab over to it. We just
-            # did the creations and tab reparenting here and returned
-            # NULL from the handler.
-            #
-            # However, as of gtk 3.14.8, reparenting a tab in the
-            # handler itself provokes a segfault. Gtk 3.14.5 is
-            # unaffected.
-            #
-            # See https://github.com/mypaint/mypaint/issues/194
-            # cf. https://bugzilla.gnome.org/show_bug.cgi?id=744385
-            #
-            # HACK: Deferring the call via an idle handler seems to be
-            # HACK: an acceptable but hopefully temporary workaround.
-            GLib.idle_add(self._create_window_idle_cb, notebook, page, x, y)
-            # Return no GtkNotebook, disallow auto-addition:
-            return None
-
-        def _create_window_idle_cb(self, notebook, page, x, y):
-            # Create subwindow with toolstack, new notebook, and tool
-            # widget wrappers, and move `page` of `notebook` there.
-            # Deferred 
+            # Create and show the parent window for a dragged-out tab.
             win = ToolStackWindow()
             self._toolstack.workspace.floating_window_created(win)
             win.stack.workspace = self._toolstack.workspace
-            self.remove(page)
             w, h = page.__prev_size
             new_nb = win.stack._get_first_notebook()
-            tool_widget = page.get_child()
-            page.remove(tool_widget)
-            new_nb.append_tool_widget_page(tool_widget)
-            # FIXME: Rewrite to remove wrappers, allow GTK to reparent
-            # FIXME: for us in the create-window case. As noted above,
-            # FIXME: this code is bad style, but we'd need this rewrite
-            # FIXME: to fix it properly.
-            new_placeholder = win.stack._append_new_placeholder(new_nb)
-            new_paned = new_placeholder.get_parent()
-            new_paned.set_position(h)
+            win.stack._append_new_placeholder(new_nb)
             # Initial position. Hopefully this will work.
             win.move(x, y)
             win.set_default_size(w, h)
             win.show_all()
-            # Do not run again for this initiating event:
-            return False
+            # Tell GTK which Notebook to move the tab to.
+            return new_nb
 
         ## Tab labels
 
@@ -1542,19 +1523,34 @@ class ToolStack (Gtk.EventBox):
         somewhere.
 
         """
+        # Try to find a notebook with few enough pages.
+        # It might be the zero-pages placeholder on the end.
         target_notebook = None
         notebooks = self._get_notebooks()
+        assert len(notebooks) > 0, (
+            "There should always be at least one Notebook widget "
+            "in any ToolStack."
+        )
         for nb in notebooks:
             if nb.get_n_pages() < maxpages:
                 target_notebook = nb
                 break
-        # Last one should always be the placeholder...
-        assert target_notebook is not None
-        # ... but don't always just use it.
-        if target_notebook.get_n_pages() == 0:
-            num_populated = len(notebooks) - 1
-            if maxnotebooks is not None and num_populated >= maxnotebooks:
+        # The placeholder tends to be recreated in idle routines,
+        # so it may not be present on the end of the stack just yet.
+        if target_notebook is None:
+            assert nb.get_n_pages() > 0
+            new_placeholder = nb.split_former_placeholder()
+            target_notebook = new_placeholder
+        # Adding a page to the placeholder would result in a split
+        # in the idle routine later. Check constraint now.
+        if maxnotebooks and (target_notebook.get_n_pages() == 0):
+            n_populated_notebooks = len([
+                n for n in notebooks
+                if n.get_n_pages() > 0
+            ])
+            if n_populated_notebooks >= maxnotebooks:
                 return False
+        # We're good to go.
         target_notebook.append_tool_widget_page(widget)
         if self.workspace:
             GLib.idle_add(self.workspace.tool_widget_added, widget)
@@ -1651,6 +1647,11 @@ class ToolStack (Gtk.EventBox):
                 warn("Unknown member type: %s" % str(widget), RuntimeWarning)
         assert len(notebooks) > 0
         return notebooks
+
+    def _set_first_paned_position(self, size):
+        widget = self.get_child()
+        if isinstance(widget, Gtk.Paned):
+            widget.set_position(size)
 
     ## Group size management (somewhat dubious)
 
@@ -2107,8 +2108,9 @@ def set_initial_window_position(win, pos):
     assert screen_w > MIN_USABLE_SIZE
     assert screen_h > MIN_USABLE_SIZE
 
-    mon_num = screen.get_monitor_at_point(ptr_x, ptr_y)
-    mon_geom = screen.get_monitor_geometry(mon_num)
+    # The target area is ideally the current monitor.
+    targ_mon_num = screen.get_monitor_at_point(ptr_x, ptr_y)
+    targ_geom = _get_target_area_geometry(screen, targ_mon_num)
 
     # Generate a sensible, positive x and y position
     if x is not None and y is not None:
@@ -2117,13 +2119,13 @@ def set_initial_window_position(win, pos):
         else:
             assert w is not None
             assert w > 0
-            final_x = mon_geom.x + (mon_geom.width - w - abs(x))
+            final_x = targ_geom.x + (targ_geom.width - w - abs(x))
         if y >= 0:
             final_y = y
         else:
             assert h is not None
             assert h > 0
-            final_y = mon_geom.y + (mon_geom.height - h - abs(y))
+            final_y = targ_geom.y + (targ_geom.height - h - abs(y))
         if final_x < 0 or final_x > screen_w - MIN_USABLE_SIZE:
             final_x = None
         if final_y < 0 or final_y > screen_h - MIN_USABLE_SIZE:
@@ -2134,18 +2136,16 @@ def set_initial_window_position(win, pos):
         final_w = w
         final_h = h
         if w < 0 or h < 0:
-            mon_num = screen.get_monitor_at_point(ptr_x, ptr_y)
-            mon_geom = screen.get_monitor_geometry(mon_num)
             if w < 0:
                 if x is not None:
-                    final_w = max(0, mon_geom.width - abs(x) - abs(w))
+                    final_w = max(0, targ_geom.width - abs(x) - abs(w))
                 else:
-                    final_w = max(0, mon_geom.width - 2*abs(w))
+                    final_w = max(0, targ_geom.width - 2*abs(w))
             if h < 0:
                 if x is not None:
-                    final_h = max(0, mon_geom.height - abs(y) - abs(h))
+                    final_h = max(0, targ_geom.height - abs(y) - abs(h))
                 else:
-                    final_h = max(0, mon_geom.height - 2*abs(h))
+                    final_h = max(0, targ_geom.height - 2*abs(h))
         if final_w > screen_w or final_w < MIN_USABLE_SIZE:
             final_w = None
         if final_h > screen_h or final_h < MIN_USABLE_SIZE:
@@ -2154,17 +2154,19 @@ def set_initial_window_position(win, pos):
     # If the window is positioned, make sure it's on a monitor which still
     # exists. Users change display layouts...
     if None not in (final_x, final_y):
-        on_existing_mon = False
+        onscreen = False
         for mon_num in xrange(screen.get_n_monitors()):
-            mon_geom = screen.get_monitor_geometry(mon_num)
-            on_this_mon = (final_x < (mon_geom.x + mon_geom.width) and
-                           final_y < (mon_geom.x + mon_geom.height) and
-                           final_x >= mon_geom.x and
-                           final_y >= mon_geom.y)
-            if on_this_mon:
-                on_existing_mon = True
+            targ_geom = _get_target_area_geometry(screen, mon_num)
+            in_targ_geom = (
+                final_x < (targ_geom.x + targ_geom.width)
+                and final_y < (targ_geom.x + targ_geom.height)
+                and final_x >= targ_geom.x
+                and final_y >= targ_geom.y
+            )
+            if in_targ_geom:
+                onscreen = True
                 break
-        if not on_existing_mon:
+        if not onscreen:
             logger.warning("Calculated window position is offscreen; "
                            "ignoring %r" % ((final_x, final_y), ))
             final_x = None
@@ -2186,6 +2188,36 @@ def set_initial_window_position(win, pos):
         return final_x, final_y
 
     return None
+
+
+def _get_target_area_geometry(screen, mon_num):
+    """Get a rect for putting windows in: normally based on monitor.
+
+    :param Gdk.Screen screen: Target screen.
+    :param int mon_num: Monitor number, e.g. that of the pointer.
+    :returns: A hopefully useable target area.
+    :rtype: Gdk.Rectangle
+
+    This function oeprates like gdk_screen_get_monitor_geometry(), but
+    falls back to the screen geometry for cases when that returns NULL.
+
+    Ref: https://github.com/mypaint/mypaint/issues/424
+
+    """
+    geom = None
+    if mon_num >= 0:
+        geom = screen.get_monitor_geometry(mon_num)
+    if geom is None:
+        logger.warning(
+            "gdk_screen_get_monitor_geometry() returned NULL: "
+            "using screen size instead as a fallback."
+        )
+        geom = Gdk.Rectangle()
+        geom.x = 0
+        geom.y = 0
+        geom.width = screen.get_width()
+        geom.height = screen.get_height()
+    return geom
 
 
 ## Module testing (interactive, but fairly minimal)
