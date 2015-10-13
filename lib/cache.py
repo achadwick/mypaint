@@ -71,3 +71,6 @@ class LRUCache (object):
             while len(self._cache) >= self._capacity:
                 self._cache.popitem(last=False)
         self._cache[key] = item
+
+    def pop(self, key, default):
+        return self._cache.pop(key, default)

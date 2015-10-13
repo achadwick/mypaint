@@ -120,12 +120,32 @@ class RootLayerStack (group.LayerStack):
         # Current layer
         self._current_path = ()
         # Self-observation
-        self.layer_content_changed += self._clear_render_cache
+        self.layer_content_changed += self._clear_render_cache_in_area
         self.layer_properties_changed += self._clear_render_cache
         self.layer_deleted += self._clear_render_cache
         self.layer_inserted += self._clear_render_cache
 
+    def _clear_render_cache_in_area(self, root, layer, x, y, w, h):
+        if (x, y, w, h) == (0, 0, 0, 0):
+            self._clear_render_cache()
+            return
+        N = tiledsurface.N
+        MAX_MIPMAP_LEVEL = tiledsurface.MAX_MIPMAP_LEVEL
+        tx_min = int(x // N)
+        ty_min = int(y // N)
+        tx_max = int((x + w) // N)
+        ty_max = int((y + h) // N)
+        for tx0 in xrange(tx_min, tx_max+1):
+            for ty0 in xrange(ty_min, ty_max+1):
+                tx, ty = tx0, ty0
+                for mipmap_level in xrange(0, MAX_MIPMAP_LEVEL+1):
+                    key = (mipmap_level, tx, ty)
+                    tx /= 2
+                    ty /= 2
+                    self._render_cache.pop(key, None)
+
     def _clear_render_cache(self, *_ignored):
+        logger.debug("Clearing tile render cache %r", self._render_cache)
         self._render_cache.clear()
 
     def clear(self):
@@ -375,7 +395,8 @@ class RootLayerStack (group.LayerStack):
 
         N = tiledsurface.N
 
-        cache_key = None
+        cache_key_1 = None
+        cache_key_2 = None
         cache_hit = False
         if dst.dtype == 'uint8':
             dst_8bit = dst
@@ -386,9 +407,19 @@ class RootLayerStack (group.LayerStack):
                 and not (kwargs.get("solo") or kwargs.get("previewing"))
             )
             if using_cache:
-                cache_key = (tx, ty, dst_has_alpha, mipmap_level,
-                             render_background, id(opaque_base_tile))
-                dst = self._render_cache.get(cache_key)
+                cache_key_1 = (mipmap_level, tx, ty)
+                cache_key_2 = (
+                    dst_has_alpha,
+                    render_background,
+                    id(opaque_base_tile),
+                )
+                renderings = self._render_cache.get(cache_key_1)
+                if renderings is None:
+                    renderings = {}
+                    self._render_cache[cache_key_1] = renderings
+                    dst = None
+                else:
+                    dst = renderings.get(cache_key_2, None)
             if dst is None:
                 dst = numpy.empty((N, N, 4), dtype='uint16')
             else:
@@ -425,8 +456,8 @@ class RootLayerStack (group.LayerStack):
                 )
                 dst = dst_over_opaque_base
 
-            if cache_key is not None:
-                self._render_cache[cache_key] = dst
+            if cache_key_2 is not None:
+                renderings[cache_key_2] = dst
 
         if dst_8bit is not None:
             if dst_has_alpha:
