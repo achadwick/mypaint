@@ -94,7 +94,7 @@ class MyPaintSurface (TileAccessible, TileBlittable, TileCompositable):
         # TODO: pass just what it needs access to, not all of self
         self._backend = mypaintlib.TiledSurface(self)
         self._tiledict = {}
-        self._tiledict_lock = threading.Lock()
+        self._tiledict_lock = threading.RLock()
         self.observers = []
 
         # Used to implement repeating surfaces, like Background
