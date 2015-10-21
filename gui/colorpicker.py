@@ -20,7 +20,6 @@ import cairo
 import windowing
 import gui.mode
 from overlays import rounded_box, Overlay
-import colors
 import lib.color
 import fill
 
@@ -83,8 +82,15 @@ class ColorPickMode (gui.mode.OneshotDragMode):
         """Enters the mode, arranging for necessary grabs ASAP"""
         super(ColorPickMode, self).enter(doc, **kwds)
         if self._started_from_key_press:
-            # Pick now, and start the drag when possible
-            self.doc.app.pick_color_at_pointer(self.doc.tdw, self.PICK_SIZE)
+            # Pick now using the last recorded event position
+            doc = self.doc
+            tdw = self.doc.tdw
+            t, x, y = doc.get_last_event_info(tdw)
+            if None not in (x, y):
+                color = tdw.pick_color(x, y)
+                cm = self.doc.app.brush_color_manager
+                cm.set_color(color)
+            # Start the drag when possible
             self._start_drag_on_next_motion_event = True
             self._needs_drag_start = True
 
@@ -93,7 +99,9 @@ class ColorPickMode (gui.mode.OneshotDragMode):
         super(ColorPickMode, self).leave(**kwds)
 
     def button_press_cb(self, tdw, event):
-        self.doc.app.pick_color_at_pointer(self.doc.tdw, self.PICK_SIZE)
+        color = tdw.pick_color(event.x, event.y)
+        cm = self.doc.app.brush_color_manager
+        cm.set_color(color)
         # Supercall will start the drag normally
         self._start_drag_on_next_motion_event = False
         return super(ColorPickMode, self).button_press_cb(tdw, event)
@@ -109,7 +117,9 @@ class ColorPickMode (gui.mode.OneshotDragMode):
         super(ColorPickMode, self).drag_stop_cb(tdw)
 
     def drag_update_cb(self, tdw, event, dx, dy):
-        self.doc.app.pick_color_at_pointer(tdw, self.PICK_SIZE)
+        color = tdw.pick_color(event.x, event.y)
+        cm = self.doc.app.brush_color_manager
+        cm.set_color(color)
         self._place_overlay(tdw, event.x, event.y)
         return super(ColorPickMode, self).drag_update_cb(tdw, event, dx, dy)
 
@@ -259,21 +269,3 @@ class ColorPickPreviewOverlay (Overlay):
         self._previous_area = area
 
 
-## More conventional color-picking button, with grab
-
-
-class BrushColorPickerButton (colors.ColorPickerButton):
-    """Color picker button that sets the app's working brush color."""
-
-    __gtype_name__ = "MyPaintBrushColorPickerButton"
-
-    def __init__(self):
-        colors.ColorPickerButton.__init__(self)
-        self.connect("realize", self._init_color_manager)
-
-    def _init_color_manager(self, widget):
-        from application import get_app
-        app = get_app()
-        mgr = app.brush_color_manager
-        assert mgr is not None
-        self.set_color_manager(mgr)

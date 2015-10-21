@@ -731,25 +731,6 @@ class Application (object):
         self._transient_msg_remove_timeout_id = None
         return False
 
-    def pick_color_at_pointer(self, widget, size=3):
-        """Set the brush color from the current pointer position on screen.
-
-        This is a wrapper for `gui.colors.get_color_at_pointer()`, and
-        additionally sets the current brush color.
-
-        """
-        # Due to a performance bug, color picking can take more time
-        # than we have between two motion events (about 8ms).
-        if hasattr(self, 'delayed_color_pick_id'):
-            GObject.source_remove(self.delayed_color_pick_id)
-
-        def delayed_color_pick():
-            del self.delayed_color_pick_id
-            color = colors.get_color_at_pointer(widget.get_display(), size)
-            self.brush_color_manager.set_color(color)
-
-        self.delayed_color_pick_id = GObject.idle_add(delayed_color_pick)
-
     ## Subwindows
 
     @property
