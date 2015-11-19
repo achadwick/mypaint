@@ -1095,7 +1095,7 @@ class DragMode (InteractionMode):
         # an idle function avoids confusing the derived class's enter() method:
         # a leave() during an enter() would be strange.
         if self.initial_modifiers is not None:
-            if self is self.doc.modes.top:
+            if self.doc and (self is self.doc.modes.top):
                 self.doc.modes.pop()
         return False
 
