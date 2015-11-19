@@ -757,15 +757,19 @@ class Overlay (gui.overlays.Overlay):
 
     def __init__(self, inkmode, tdw):
         super(Overlay, self).__init__()
-        self._inkmode = weakref.proxy(inkmode)
-        self._tdw = weakref.proxy(tdw)
+        self._inkmode_ref = weakref.ref(inkmode)
+        self._tdw_ref = weakref.ref(tdw)
         self._button_pixbuf_cache = {}
         self.accept_button_pos = None
         self.reject_button_pos = None
 
     def update_button_positions(self):
         """Recalculates the positions of the mode's buttons."""
-        nodes = self._inkmode.nodes
+        mode = self._inkmode_ref()
+        tdw = self._tdw_ref()
+        if not (mode and tdw):
+            return
+        nodes = mode.nodes
         num_nodes = len(nodes)
         if num_nodes == 0:
             self.reject_button_pos = None
@@ -774,7 +778,7 @@ class Overlay (gui.overlays.Overlay):
 
         button_radius = gui.style.FLOATING_BUTTON_RADIUS
         margin = 1.5 * button_radius
-        alloc = self._tdw.get_allocation()
+        alloc = tdw.get_allocation()
         view_x0, view_y0 = alloc.x, alloc.y
         view_x1, view_y1 = view_x0+alloc.width, view_y0+alloc.height
 
@@ -784,7 +788,7 @@ class Overlay (gui.overlays.Overlay):
         fixed = []
 
         for i, node in enumerate(nodes):
-            x, y = self._tdw.model_to_display(node.x, node.y)
+            x, y = tdw.model_to_display(node.x, node.y)
             fixed.append(_LayoutNode(x, y))
 
         # The reject and accept buttons are connected to different nodes
@@ -870,11 +874,14 @@ class Overlay (gui.overlays.Overlay):
 
     def _get_onscreen_nodes(self):
         """Iterates across only the on-screen nodes."""
-        mode = self._inkmode
+        mode = self._inkmode_ref()
+        tdw = self._tdw_ref()
+        if not (mode and tdw):
+            return
         radius = gui.style.DRAGGABLE_POINT_HANDLE_SIZE
-        alloc = self._tdw.get_allocation()
+        alloc = tdw.get_allocation()
         for i, node in enumerate(mode.nodes):
-            x, y = self._tdw.model_to_display(node.x, node.y)
+            x, y = tdw.model_to_display(node.x, node.y)
             node_on_screen = (
                 x > alloc.x - radius*2 and
                 y > alloc.y - radius*2 and
@@ -887,9 +894,12 @@ class Overlay (gui.overlays.Overlay):
     def paint(self, cr):
         """Draw adjustable nodes to the screen"""
         # Control nodes
-        mode = self._inkmode
+        mode = self._inkmode_ref()
+        tdw = self._tdw_ref()
+        if not (mode and tdw):
+            return
         radius = gui.style.DRAGGABLE_POINT_HANDLE_SIZE
-        alloc = self._tdw.get_allocation()
+        alloc = tdw.get_allocation()
         for i, node, x, y in self._get_onscreen_nodes():
             color = gui.style.EDITABLE_ITEM_COLOR
             if mode.phase == _Phase.ADJUST:
